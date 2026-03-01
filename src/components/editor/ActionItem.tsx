@@ -227,9 +227,11 @@ const ActionItem: React.FC<ActionItemProps> = memo(({
                     <MaterialIcon name="close" className="text-base" />
                 </button>
             </div>
-            {(action.type === 'click' || action.type === 'type' || action.type === 'hover' || action.type === 'wait_selector') && (
+            {(action.type === 'click' || action.type === 'type' || action.type === 'hover' || action.type === 'wait_selector' || action.type === 'scroll') && (
                 <div className="space-y-1.5 relative">
-                    <label className="text-[7px] font-bold text-gray-600 uppercase tracking-widest pl-1 block">Selector</label>
+                    <label className="text-[7px] font-bold text-gray-600 uppercase tracking-widest pl-1 block">
+                        {action.type === 'scroll' ? 'Selector (Optional)' : 'Selector'}
+                    </label>
                     {aiPromptOpen && (
                         <div ref={aiPopupRef} className="absolute right-0 top-6 z-30 w-64 bg-[#111] border border-white/10 rounded-xl shadow-2xl p-3 space-y-2">
                             <div className="flex items-center justify-between">
@@ -292,7 +294,7 @@ const ActionItem: React.FC<ActionItemProps> = memo(({
                                 onChange={(v) => onUpdate(action.id, { selector: v })}
                                 onBlur={() => onAutoSave()}
                                 variables={variables}
-                                placeholder=".btn-primary"
+                                placeholder={action.type === 'scroll' ? ".scroll-container or leave empty" : ".btn-primary"}
                             />
                         </div>
                         {onGenerateSelector && (
@@ -309,20 +311,7 @@ const ActionItem: React.FC<ActionItemProps> = memo(({
                 </div>
             )}
 
-            {action.type === 'scroll' && (
-                <div className="space-y-1.5">
-                    <label className="text-[7px] font-bold text-gray-600 uppercase tracking-widest pl-1">Selector (Optional)</label>
-                    <div className="bg-white/[0.03] border border-white/5 rounded-xl px-3 py-2 text-[11px] focus-within:border-white/20 transition-all">
-                        <RichInput
-                            value={action.selector || ''}
-                            onChange={(v) => onUpdate(action.id, { selector: v })}
-                            onBlur={() => onAutoSave()}
-                            variables={variables}
-                            placeholder=".scroll-container or leave empty"
-                        />
-                    </div>
-                </div>
-            )}
+
             {action.type === 'scroll' && (
                 <div className="space-y-1.5">
                     <label className="text-[7px] font-bold text-gray-600 uppercase tracking-widest pl-1">Scroll Speed (ms)</label>

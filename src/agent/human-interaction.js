@@ -1,20 +1,48 @@
 const randomBetween = (min, max) => min + Math.random() * (max - min);
 
-async function moveMouseHumanlike(page, targetX, targetY) {
-    const steps = 8 + Math.floor(Math.random() * 6);
-    const startX = targetX + (Math.random() - 0.5) * 120;
-    const startY = targetY + (Math.random() - 0.5) * 120;
-    const ctrlX = (startX + targetX) / 2 + (Math.random() - 0.5) * 80;
-    const ctrlY = (startY + targetY) / 2 + (Math.random() - 0.5) * 80;
+async function moveMouseHumanlike(page, targetX, targetY, options = {}) {
+    const { cursorGlide, startX: providedStartX, startY: providedStartY } = options;
+
+    // If cursorGlide is true and we have a starting point, use it.
+    // Otherwise, simulate a quick jump near the target for standard execution speed.
+    const startX = (cursorGlide && providedStartX !== undefined && providedStartX !== null) ? providedStartX : targetX + (Math.random() - 0.5) * 120;
+    const startY = (cursorGlide && providedStartY !== undefined && providedStartY !== null) ? providedStartY : targetY + (Math.random() - 0.5) * 120;
+
+    const distance = Math.sqrt(Math.pow(targetX - startX, 2) + Math.pow(targetY - startY, 2));
+
+    let steps = 8 + Math.floor(Math.random() * 6);
+    if (cursorGlide) {
+        steps = Math.max(15, Math.min(60, Math.floor(distance / 15)));
+    }
+
+    const ctrlX = (startX + targetX) / 2 + (Math.random() - 0.5) * Math.min(80, distance * 0.2);
+    const ctrlY = (startY + targetY) / 2 + (Math.random() - 0.5) * Math.min(80, distance * 0.2);
+
+    // Sync the actual browser mouse position to the tracked start before
+    // beginning the curve. Without this, the CDP mouse may have drifted
+    // (e.g. after scrollIntoViewIfNeeded or page.evaluate between actions)
+    // causing a visible jump to wherever Playwright thinks the cursor is.
+    if (cursorGlide) {
+        await page.mouse.move(startX, startY, { steps: 1 });
+    }
 
     for (let i = 1; i <= steps; i++) {
         const t = i / steps;
-        const inv = 1 - t;
-        const curveX = inv * inv * startX + 2 * inv * t * ctrlX + t * t * targetX;
-        const curveY = inv * inv * startY + 2 * inv * t * ctrlY + t * t * targetY;
-        const jitterX = (Math.random() - 0.5) * 2;
-        const jitterY = (Math.random() - 0.5) * 2;
+
+        // Easing function to slow down at start and end
+        const easeT = cursorGlide ? (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2) : t;
+        const inv = 1 - easeT;
+
+        const curveX = inv * inv * startX + 2 * inv * easeT * ctrlX + easeT * easeT * targetX;
+        const curveY = inv * inv * startY + 2 * inv * easeT * ctrlY + easeT * easeT * targetY;
+        const jitterX = (Math.random() - 0.5) * (cursorGlide ? 1 : 2);
+        const jitterY = (Math.random() - 0.5) * (cursorGlide ? 1 : 2);
+
         await page.mouse.move(curveX + jitterX, curveY + jitterY, { steps: 1 });
+
+        if (cursorGlide) {
+            await page.waitForTimeout(Math.random() * 15 + 10);
+        }
     }
 }
 

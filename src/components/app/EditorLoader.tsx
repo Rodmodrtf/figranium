@@ -61,8 +61,10 @@ const EditorLoader: React.FC<EditorLoaderProps> = ({
                 const migrated = { ...task };
                 if (!migrated.variables || Array.isArray(migrated.variables)) migrated.variables = {};
                 if (!migrated.stealth) {
-                    migrated.stealth = { allowTypos: false, idleMovements: false, overscroll: false, deadClicks: false, fatigue: false, naturalTyping: false };
+                    migrated.stealth = { allowTypos: false, idleMovements: false, overscroll: false, deadClicks: false, fatigue: false, naturalTyping: false, cursorGlide: false };
                 }
+                if (migrated.stealth.cursorGlide === undefined) migrated.stealth.cursorGlide = (migrated.stealth as any).humanCursor ?? false;
+                delete (migrated.stealth as any).humanCursor;
                 if (Array.isArray(migrated.actions)) {
                     migrated.actions = migrated.actions.map((action, index) => {
                         if (action && action.id) return action;

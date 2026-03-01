@@ -14,6 +14,7 @@ export interface StealthConfig {
     deadClicks: boolean;
     fatigue: boolean;
     naturalTyping: boolean;
+    cursorGlide: boolean;
 }
 
 export interface Action {

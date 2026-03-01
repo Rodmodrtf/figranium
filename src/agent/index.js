@@ -97,7 +97,8 @@ async function handleAgent(req, res) {
         overscroll = false,
         deadClicks = false,
         fatigue = false,
-        naturalTyping = false
+        naturalTyping = false,
+        cursorGlide = false
     } = stealth;
 
     if (typeof actions === 'string') {
@@ -244,6 +245,7 @@ async function handleAgent(req, res) {
         let index = 0;
         const maxSteps = Math.max(actions.length * 20, 1000);
         let steps = 0;
+        let lastMouse = null;
 
         while (index < actions.length) {
             if (isStopRequested(runId)) {
@@ -458,10 +460,13 @@ async function handleAgent(req, res) {
                         naturalTyping,
                         fatigue,
                         idleMovements,
-                        overscroll
+                        overscroll,
+                        cursorGlide
                     },
                     baseUrl,
                     lastBlockOutput,
+                    get lastMouse() { return lastMouse; },
+                    set lastMouse(val) { lastMouse = val; },
                     setStopOutcome: (out) => { stopOutcome = out; },
                     setStopRequested: (req) => { stopRequested = req; },
                     pendingDownloads,

@@ -43,7 +43,8 @@ export const makeDefaultTask = (): Task => ({
         overscroll: false,
         deadClicks: false,
         fatigue: false,
-        naturalTyping: false
+        naturalTyping: false,
+        cursorGlide: false
     },
     actions: [],
     variables: {},
@@ -93,7 +94,8 @@ export const buildNewTask = (): Task => {
             overscroll: false,
             deadClicks: false,
             fatigue: false,
-            naturalTyping: false
+            naturalTyping: false,
+            cursorGlide: false
         },
         actions: [],
         variables: {},
