@@ -34,7 +34,7 @@
   "license": "GPL-3.0-only",
   "description": "",
   "dependencies": {
-    "@google/gemini-cli": "^0.29.0",
+    "@google/gemini-cli": "^0.29.7",
     "bcryptjs": "^3.0.3",
     "express": "^5.2.1",
     "express-rate-limit": "^8.2.1",
