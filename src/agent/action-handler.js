@@ -134,6 +134,7 @@ const executeAction = async (act, context) => {
             const coords = parseCoords(String(selectorValue || ''));
             logs.push(`Clicking: ${selectorValue}`);
             if (coords) {
+                await moveMouseHumanlike(page, coords.x, coords.y, { cursorGlide, startX: context.lastMouse?.x, startY: context.lastMouse?.y });
                 await page.mouse.click(coords.x, coords.y, { delay: baseDelay(50) });
                 context.lastMouse = { x: coords.x, y: coords.y };
                 result = true;
@@ -152,7 +153,8 @@ const executeAction = async (act, context) => {
                 const viewport = page.viewportSize() || { width: 1280, height: 720 };
                 const dcX = 10 + Math.random() * (viewport.width * 0.2);
                 const dcY = 10 + Math.random() * (viewport.height * 0.2);
-                await page.mouse.click(dcX, dcY);
+                await moveMouseHumanlike(page, dcX, dcY, { cursorGlide, startX: context.lastMouse?.x, startY: context.lastMouse?.y });
+                await page.mouse.click(dcX, dcY, { delay: baseDelay(30) });
                 context.lastMouse = { x: dcX, y: dcY };
                 await page.waitForTimeout(baseDelay(200));
             }
@@ -167,7 +169,9 @@ const executeAction = async (act, context) => {
                 if (deadClicks && Math.random() < 0.25) {
                     const offsetX = (Math.random() - 0.5) * Math.min(20, box.width / 3);
                     const offsetY = (Math.random() - 0.5) * Math.min(20, box.height / 3);
+                    if (cursorGlide) await moveMouseHumanlike(page, clickX + offsetX, clickY + offsetY, { cursorGlide, startX: clickX, startY: clickY });
                     await page.mouse.click(clickX + offsetX, clickY + offsetY, { delay: baseDelay(30) });
+                    context.lastMouse = { x: clickX + offsetX, y: clickY + offsetY };
                     await page.waitForTimeout(baseDelay(120));
                 }
 
@@ -245,6 +249,7 @@ const executeAction = async (act, context) => {
                 const coords = parseCoords(String(selectorValue));
                 logs.push(`Typing into ${selectorValue}: ${valueText}`);
                 if (coords) {
+                    await moveMouseHumanlike(page, coords.x, coords.y, { cursorGlide, startX: context.lastMouse?.x, startY: context.lastMouse?.y });
                     await page.mouse.click(coords.x, coords.y, { delay: baseDelay(50) });
                     context.lastMouse = { x: coords.x, y: coords.y };
                     await typeIntoSelector();
