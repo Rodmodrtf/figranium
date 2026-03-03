@@ -57,7 +57,26 @@ const getLocationalCoords = async (page, selectorValue, lastMouse) => {
     const handle = await page.$(selectorValue);
     if (!handle) return null;
     await handle.scrollIntoViewIfNeeded();
-    const box = await handle.boundingBox();
+
+    // Stability check: Wait for the bounding box to stop moving (sign of settling layout/animations)
+    let box = null;
+    let lastBox = null;
+    const stabilityStart = Date.now();
+    const stabilityTimeout = 400; // max wait for layout to settle
+
+    while (Date.now() - stabilityStart < stabilityTimeout) {
+        box = await handle.boundingBox();
+        if (box && lastBox &&
+            Math.abs(box.x - lastBox.x) < 0.5 &&
+            Math.abs(box.y - lastBox.y) < 0.5 &&
+            Math.abs(box.width - lastBox.width) < 0.5 &&
+            Math.abs(box.height - lastBox.height) < 0.5) {
+            break; // stable
+        }
+        lastBox = box;
+        await page.waitForTimeout(30);
+    }
+
     if (!box) return null;
 
     if (!lastMouse) {
