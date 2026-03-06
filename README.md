@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://raw.githubusercontent.com/figranium/figranium/main/figranium_banner.png" alt="Figranium Banner">
+  <img src="https://raw.githubusercontent.com/figranium/figranium/main/demo-run.gif" alt="Figranium Banner">
 </div>
 
 # Figranium — Deterministic Control for an Agentic World
