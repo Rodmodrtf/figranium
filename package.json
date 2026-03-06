@@ -1,9 +1,9 @@
 {
-  "name": "@doppelgangerdev/doppelganger",
+  "name": "figranium",
   "version": "0.9.0",
   "main": "index.js",
   "bin": {
-    "doppelganger": "bin/cli.js"
+    "figranium": "bin/cli.js"
   },
   "scripts": {
     "dev": "vite",
