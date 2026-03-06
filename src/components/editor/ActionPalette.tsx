@@ -56,17 +56,22 @@ const ActionPalette: React.FC<ActionPaletteProps> = ({ open, query, onQueryChang
                     placeholder="Type to filter (e.g., if, click, loop)"
                     className="w-full rounded-xl bg-black/40 border border-white/10 px-4 py-3 text-sm text-white placeholder:text-gray-600 focus:outline-none focus:border-white/30"
                 />
-                <div className="mt-4 max-h-[320px] overflow-y-auto custom-scrollbar space-y-2">
-                    {filtered.map((item) => (
-                        <button
-                            key={item.type}
-                            onClick={() => onSelect(item.type)}
-                            className="w-full text-left px-4 py-3 rounded-xl border border-white/5 bg-white/[0.02] hover:bg-white/[0.06] transition-all"
-                        >
-                            <div className="text-[10px] font-bold uppercase tracking-widest text-white">{item.label}</div>
-                            <div className="text-[9px] text-gray-500 mt-1">{item.description}</div>
-                        </button>
-                    ))}
+                <div className="mt-4 max-h-[400px] overflow-y-auto custom-scrollbar pr-2">
+                    <div className="grid grid-cols-2 gap-3 pb-2">
+                        {filtered.map((item) => (
+                            <button
+                                key={item.type}
+                                onClick={() => onSelect(item.type)}
+                                className="flex flex-col items-start gap-2 text-left p-4 rounded-2xl border border-white/5 bg-white/[0.02] hover:bg-white/[0.08] hover:border-white/20 transition-all hover:scale-[1.02] active:scale-95 group focus:outline-none focus:ring-2 focus:ring-blue-500/50"
+                            >
+                                <MaterialIcon name={item.icon || 'extension'} className="text-2xl text-white/80 group-hover:text-white transition-colors shrink-0 mb-1" />
+                                <div>
+                                    <div className="text-[11px] font-bold uppercase tracking-widest text-white/90 group-hover:text-white mb-1">{item.label}</div>
+                                    <div className="text-[10px] text-gray-500 line-clamp-2 leading-relaxed">{item.description}</div>
+                                </div>
+                            </button>
+                        ))}
+                    </div>
                     {filtered.length === 0 && (
                         <div className="text-[9px] text-gray-600 uppercase tracking-widest">No matches.</div>
                     )}
