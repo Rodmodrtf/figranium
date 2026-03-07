@@ -180,33 +180,40 @@ router.post('/generate-selector', requireAuth, async (req, res) => {
         const openAiKeys = await loadOpenAiApiKey();
         const claudeKeys = await loadClaudeApiKey();
 
+        const hasAnyKeys = geminiKeys.length > 0 || openAiKeys.length > 0 || claudeKeys.length > 0;
+        if (!hasAnyKeys) {
+            return res.status(400).json({ error: 'No AI API keys configured. Please add a Gemini, OpenAI, or Anthropic key in Settings.' });
+        }
+
         const llmPrompt = `Given this HTML:\n${agentResult.html}\n\nFind a reliable CSS selector for: "${prompt}"\n\nCRITICAL RULES:\n- Content-based selectors (e.g., using placeholder text, aria-labels, or has-text filters) are the MOST reliable.\n- NEVER use dynamic, numeric, or random-looking IDs (e.g., #APjFqb, #popup-170970, #id-9812).\n- NEVER use auto-generated utility classes that look like hashes (e.g., .css-1h2p).\n- Avoid long, fragile element chains (e.g., body > div > div > span).\n- Prefer specific, semantic, human-readable classes or data attributes (\`[data-testid="xyz"]\`, \`[aria-label="xyz"]\`).\n- If no good class/id exists, prefer structural pseudo-classes (e.g., \`button:nth-of-type(2)\`) or nearby stable anchors.\n\nOnly reply with the exact CSS selector, nothing else. Do not include markdown formatting or backticks.`;
 
         let selector = null;
-        let lastError = null;
+        let errors = [];
 
         // Try Gemini
-        if (geminiKeys.length > 0) {
-            for (const key of geminiKeys) {
-                try {
-                    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({
-                            contents: [{ parts: [{ text: llmPrompt }] }]
-                        })
-                    });
-                    if (response.ok) {
-                        const data = await response.json();
-                        selector = data.candidates?.[0]?.content?.parts?.[0]?.text;
-                        if (selector) break;
-                    }
-                } catch (e) { lastError = e.message; }
-            }
+        for (const key of geminiKeys) {
+            try {
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${key}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        contents: [{ parts: [{ text: llmPrompt }] }]
+                    })
+                });
+                if (response.ok) {
+                    const data = await response.json();
+                    selector = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                    if (selector) break;
+                    errors.push(`Gemini: Success response but no selector found in data.`);
+                } else {
+                    const text = await response.text();
+                    errors.push(`Gemini (Status ${response.status}): ${text}`);
+                }
+            } catch (e) { errors.push(`Gemini Error: ${e.message}`); }
         }
 
         // Try OpenAI if no selector yet
-        if (!selector && openAiKeys.length > 0) {
+        if (!selector) {
             for (const key of openAiKeys) {
                 try {
                     const response = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -224,13 +231,17 @@ router.post('/generate-selector', requireAuth, async (req, res) => {
                         const data = await response.json();
                         selector = data.choices?.[0]?.message?.content;
                         if (selector) break;
+                        errors.push(`OpenAI: Success response but no selector found in data.`);
+                    } else {
+                        const text = await response.text();
+                        errors.push(`OpenAI (Status ${response.status}): ${text}`);
                     }
-                } catch (e) { lastError = e.message; }
+                } catch (e) { errors.push(`OpenAI Error: ${e.message}`); }
             }
         }
 
         // Try Claude if no selector yet
-        if (!selector && claudeKeys.length > 0) {
+        if (!selector) {
             for (const key of claudeKeys) {
                 try {
                     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -250,13 +261,20 @@ router.post('/generate-selector', requireAuth, async (req, res) => {
                         const data = await response.json();
                         selector = data.content?.[0]?.text;
                         if (selector) break;
+                        errors.push(`Claude: Success response but no selector found in data.`);
+                    } else {
+                        const text = await response.text();
+                        errors.push(`Claude (Status ${response.status}): ${text}`);
                     }
-                } catch (e) { lastError = e.message; }
+                } catch (e) { errors.push(`Claude Error: ${e.message}`); }
             }
         }
 
         if (!selector) {
-            return res.status(500).json({ error: 'Failed to generate selector. Please ensure at least one AI API key is configured.', detail: lastError });
+            return res.status(500).json({
+                error: 'Failed to generate selector using configured AI keys.',
+                details: errors.join(' | ')
+            });
         }
 
         selector = selector.trim();

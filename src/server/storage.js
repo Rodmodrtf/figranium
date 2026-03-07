@@ -383,16 +383,23 @@ async function loadApiKey() {
     return apiKeyLoadPromise;
 }
 
-async function saveApiKey(apiKey) {
+async function saveApiKey(apiKeyArg) {
+    const apiKey = typeof apiKeyArg === 'string' ? apiKeyArg.trim() : apiKeyArg;
     apiKeyCache = apiKey;
     const useDB = await ensureDB();
     if (useDB) {
         const pool = getPool();
         try {
             await pool.query('INSERT INTO api_key (id, key) VALUES (1, $1) ON CONFLICT (id) DO UPDATE SET key = EXCLUDED.key', [apiKey]);
-        } catch (e) { }
+        } catch (e) {
+            console.error('[STORAGE] Failed to save API key to DB:', e.message);
+        }
     } else {
-        fs.writeFileSync(API_KEY_FILE, JSON.stringify({ apiKey }, null, 2));
+        try {
+            fs.writeFileSync(API_KEY_FILE, JSON.stringify({ apiKey }, null, 2));
+        } catch (e) {
+            console.error('[STORAGE] Failed to save API key to file:', e.message);
+        }
     }
 
     // Try to update user with the new API key too
@@ -413,24 +420,32 @@ async function loadGeminiApiKey() {
         try {
             const pool = getPool();
             const res = await pool.query('SELECT key FROM gemini_api_key ORDER BY id ASC');
-            keys = res.rows.map(row => row.key).filter(k => k);
-        } catch (e) { }
+            keys = res.rows.map(row => row.key ? row.key.trim() : '').filter(k => k);
+        } catch (e) {
+            console.error('[STORAGE] Failed to load Gemini keys from DB:', e.message);
+        }
     } else {
         try {
+            if (!fs.existsSync(GEMINI_API_KEY_FILE)) return [];
             const raw = await fs.promises.readFile(GEMINI_API_KEY_FILE, 'utf8');
             const data = JSON.parse(raw);
             if (Array.isArray(data.geminiApiKeys)) {
-                keys = data.geminiApiKeys;
+                keys = data.geminiApiKeys.map(k => typeof k === 'string' ? k.trim() : '').filter(k => k);
             } else if (data.geminiApiKey) {
-                keys = [data.geminiApiKey]; // backward compatibility
+                keys = [data.geminiApiKey.trim()]; // backward compatibility
             }
-        } catch (e) { }
+        } catch (e) {
+            console.error('[STORAGE] Failed to load Gemini keys from file:', e.message);
+        }
     }
     return keys;
 }
 
 async function saveGeminiApiKey(keysArg) {
-    const keys = Array.isArray(keysArg) ? keysArg : (keysArg ? [keysArg] : []);
+    const keys = (Array.isArray(keysArg) ? keysArg : (keysArg ? [keysArg] : []))
+        .map(k => typeof k === 'string' ? k.trim() : '')
+        .filter(k => k);
+
     const useDB = await ensureDB();
     if (useDB) {
         const pool = getPool();
@@ -439,19 +454,22 @@ async function saveGeminiApiKey(keysArg) {
             await client.query('BEGIN');
             await client.query('TRUNCATE gemini_api_key');
             let id = 1;
-            for (let i = 0; i < keys.length; i++) {
-                if (keys[i] && keys[i].trim()) {
-                    await client.query('INSERT INTO gemini_api_key (id, key) VALUES ($1, $2)', [id++, keys[i].trim()]);
-                }
+            for (const key of keys) {
+                await client.query('INSERT INTO gemini_api_key (id, key) VALUES ($1, $2)', [id++, key]);
             }
             await client.query('COMMIT');
         } catch (e) {
             await client.query('ROLLBACK');
+            console.error('[STORAGE] Failed to save Gemini keys to DB:', e.message);
         } finally {
             client.release();
         }
     } else {
-        fs.writeFileSync(GEMINI_API_KEY_FILE, JSON.stringify({ geminiApiKeys: keys.filter(k => k && k.trim()) }, null, 2));
+        try {
+            fs.writeFileSync(GEMINI_API_KEY_FILE, JSON.stringify({ geminiApiKeys: keys }, null, 2));
+        } catch (e) {
+            console.error('[STORAGE] Failed to save Gemini keys to file:', e.message);
+        }
     }
 }
 
@@ -463,24 +481,32 @@ async function loadOpenAiApiKey() {
         try {
             const pool = getPool();
             const res = await pool.query('SELECT key FROM openai_api_key ORDER BY id ASC');
-            keys = res.rows.map(row => row.key).filter(k => k);
-        } catch (e) { }
+            keys = res.rows.map(row => row.key ? row.key.trim() : '').filter(k => k);
+        } catch (e) {
+            console.error('[STORAGE] Failed to load OpenAI keys from DB:', e.message);
+        }
     } else {
         try {
+            if (!fs.existsSync(OPENAI_API_KEY_FILE)) return [];
             const raw = await fs.promises.readFile(OPENAI_API_KEY_FILE, 'utf8');
             const data = JSON.parse(raw);
             if (Array.isArray(data.openAiApiKeys)) {
-                keys = data.openAiApiKeys;
+                keys = data.openAiApiKeys.map(k => typeof k === 'string' ? k.trim() : '').filter(k => k);
             } else if (data.openAiApiKey) {
-                keys = [data.openAiApiKey];
+                keys = [data.openAiApiKey.trim()];
             }
-        } catch (e) { }
+        } catch (e) {
+            console.error('[STORAGE] Failed to load OpenAI keys from file:', e.message);
+        }
     }
     return keys;
 }
 
 async function saveOpenAiApiKey(keysArg) {
-    const keys = Array.isArray(keysArg) ? keysArg : (keysArg ? [keysArg] : []);
+    const keys = (Array.isArray(keysArg) ? keysArg : (keysArg ? [keysArg] : []))
+        .map(k => typeof k === 'string' ? k.trim() : '')
+        .filter(k => k);
+
     const useDB = await ensureDB();
     if (useDB) {
         const pool = getPool();
@@ -489,19 +515,22 @@ async function saveOpenAiApiKey(keysArg) {
             await client.query('BEGIN');
             await client.query('TRUNCATE openai_api_key');
             let id = 1;
-            for (let i = 0; i < keys.length; i++) {
-                if (keys[i] && keys[i].trim()) {
-                    await client.query('INSERT INTO openai_api_key (id, key) VALUES ($1, $2)', [id++, keys[i].trim()]);
-                }
+            for (const key of keys) {
+                await client.query('INSERT INTO openai_api_key (id, key) VALUES ($1, $2)', [id++, key]);
             }
             await client.query('COMMIT');
         } catch (e) {
             await client.query('ROLLBACK');
+            console.error('[STORAGE] Failed to save OpenAI keys to DB:', e.message);
         } finally {
             client.release();
         }
     } else {
-        fs.writeFileSync(OPENAI_API_KEY_FILE, JSON.stringify({ openAiApiKeys: keys.filter(k => k && k.trim()) }, null, 2));
+        try {
+            fs.writeFileSync(OPENAI_API_KEY_FILE, JSON.stringify({ openAiApiKeys: keys }, null, 2));
+        } catch (e) {
+            console.error('[STORAGE] Failed to save OpenAI keys to file:', e.message);
+        }
     }
 }
 
@@ -513,24 +542,32 @@ async function loadClaudeApiKey() {
         try {
             const pool = getPool();
             const res = await pool.query('SELECT key FROM claude_api_key ORDER BY id ASC');
-            keys = res.rows.map(row => row.key).filter(k => k);
-        } catch (e) { }
+            keys = res.rows.map(row => row.key ? row.key.trim() : '').filter(k => k);
+        } catch (e) {
+            console.error('[STORAGE] Failed to load Claude keys from DB:', e.message);
+        }
     } else {
         try {
+            if (!fs.existsSync(CLAUDE_API_KEY_FILE)) return [];
             const raw = await fs.promises.readFile(CLAUDE_API_KEY_FILE, 'utf8');
             const data = JSON.parse(raw);
             if (Array.isArray(data.claudeApiKeys)) {
-                keys = data.claudeApiKeys;
+                keys = data.claudeApiKeys.map(k => typeof k === 'string' ? k.trim() : '').filter(k => k);
             } else if (data.claudeApiKey) {
-                keys = [data.claudeApiKey];
+                keys = [data.claudeApiKey.trim()];
             }
-        } catch (e) { }
+        } catch (e) {
+            console.error('[STORAGE] Failed to load Claude keys from file:', e.message);
+        }
     }
     return keys;
 }
 
 async function saveClaudeApiKey(keysArg) {
-    const keys = Array.isArray(keysArg) ? keysArg : (keysArg ? [keysArg] : []);
+    const keys = (Array.isArray(keysArg) ? keysArg : (keysArg ? [keysArg] : []))
+        .map(k => typeof k === 'string' ? k.trim() : '')
+        .filter(k => k);
+
     const useDB = await ensureDB();
     if (useDB) {
         const pool = getPool();
@@ -539,19 +576,22 @@ async function saveClaudeApiKey(keysArg) {
             await client.query('BEGIN');
             await client.query('TRUNCATE claude_api_key');
             let id = 1;
-            for (let i = 0; i < keys.length; i++) {
-                if (keys[i] && keys[i].trim()) {
-                    await client.query('INSERT INTO claude_api_key (id, key) VALUES ($1, $2)', [id++, keys[i].trim()]);
-                }
+            for (const key of keys) {
+                await client.query('INSERT INTO claude_api_key (id, key) VALUES ($1, $2)', [id++, key]);
             }
             await client.query('COMMIT');
         } catch (e) {
             await client.query('ROLLBACK');
+            console.error('[STORAGE] Failed to save Claude keys to DB:', e.message);
         } finally {
             client.release();
         }
     } else {
-        fs.writeFileSync(CLAUDE_API_KEY_FILE, JSON.stringify({ claudeApiKeys: keys.filter(k => k && k.trim()) }, null, 2));
+        try {
+            fs.writeFileSync(CLAUDE_API_KEY_FILE, JSON.stringify({ claudeApiKeys: keys }, null, 2));
+        } catch (e) {
+            console.error('[STORAGE] Failed to save Claude keys to file:', e.message);
+        }
     }
 }
 
