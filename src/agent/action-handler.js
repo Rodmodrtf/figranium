@@ -230,6 +230,16 @@ const executeAction = async (act, context) => {
                     if (clickBox) {
                         context.lastMouse = { x: clickBox.x + clickBox.width / 2, y: clickBox.y + clickBox.height / 2 };
                     }
+                } else {
+                    // getLocationalCoords failed, fall back to standard click
+                    await page.click(selectorValue, { delay: baseDelay(50) });
+                }
+            } else {
+                // No randomization — use standard Playwright click
+                await page.click(selectorValue, { delay: baseDelay(50) });
+                const clickBox = await (await page.$(selectorValue))?.boundingBox();
+                if (clickBox) {
+                    context.lastMouse = { x: clickBox.x + clickBox.width / 2, y: clickBox.y + clickBox.height / 2 };
                 }
             }
             result = true;

@@ -30,7 +30,7 @@ interface EditorScreenProps {
     runId?: string | null;
     onStop?: () => void;
     isHeadfulOpen?: boolean;
-    onOpenHeadful?: (url: string) => void;
+    onOpenHeadful?: (url: string, targetActionId?: string, taskSnapshot?: Task, variables?: any) => void;
     onStopHeadful?: () => void;
     useNovnc?: boolean | null;
 }
@@ -162,6 +162,12 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
     const [proxyList, setProxyList] = useState<{ id: string }[]>([]);
     const [proxyListLoaded, setProxyListLoaded] = useState(false);
     const [isResultsOpen, setIsResultsOpen] = useState(false);
+    const [isInspectMode, setIsInspectMode] = useState(true);
+    const [isInspectLoading, setIsInspectLoading] = useState(false);
+    const [activeInspectActionId, setActiveInspectActionId] = useState<string | null>(null);
+    const activeInspectActionIdRef = useRef<string | null>(null);
+    useEffect(() => { activeInspectActionIdRef.current = activeInspectActionId; }, [activeInspectActionId]);
+    const [selectorOptionsById, setSelectorOptionsById] = useState<Record<string, string[]>>({});
     const [canvasOffset, setCanvasOffset] = useState({ x: 0, y: 0 });
     const [canvasScale, setCanvasScale] = useState(1);
     const isPanningRef = useRef(false);
@@ -183,15 +189,60 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
     useEffect(() => { currentTaskRef.current = currentTask; }, [currentTask]);
 
     const isHeadfulOpenRef = useRef(isHeadfulOpen);
-    useEffect(() => { isHeadfulOpenRef.current = isHeadfulOpen; }, [isHeadfulOpen]);
+    useEffect(() => {
+        isHeadfulOpenRef.current = isHeadfulOpen;
+        if (!isHeadfulOpen) {
+            setIsInspectMode(false);
+            setIsInspectLoading(false);
+        }
+    }, [isHeadfulOpen]);
+
+    const onStopHeadfulRef = useRef(onStopHeadful);
+    useEffect(() => { onStopHeadfulRef.current = onStopHeadful; }, [onStopHeadful]);
 
     useEffect(() => {
+        let eventSource: EventSource | null = null;
+        if (isHeadfulOpen) {
+            setIsInspectMode(true);
+            eventSource = new EventSource('/api/headful/selector_stream');
+            eventSource.onmessage = (e) => {
+                try {
+                    const data = JSON.parse(e.data);
+                    const inspectId = activeInspectActionIdRef.current;
+                    if (data.selector && inspectId) {
+                        try {
+                            const parsed = JSON.parse(data.selector);
+                            if (Array.isArray(parsed) && parsed.length > 0) {
+                                setSelectorOptionsById(prev => ({ ...prev, [inspectId]: parsed }));
+                                updateAction(inspectId, { selector: parsed[0] }, true);
+                            } else {
+                                updateAction(inspectId, { selector: data.selector }, true);
+                            }
+                        } catch {
+                            updateAction(inspectId, { selector: data.selector }, true);
+                        }
+                        setActiveInspectActionId(null);
+
+                        // Optionally disable inspect mode after picking:
+                        // setIsInspectMode(false);
+                        // fetch('/api/headful/inspect', {
+                        //    method: 'POST',
+                        //    headers: { 'Content-Type': 'application/json' },
+                        //    body: JSON.stringify({ enabled: false })
+                        // });
+                    }
+                } catch (err) { }
+            };
+        }
         return () => {
+            if (eventSource) {
+                eventSource.close();
+            }
             if (isHeadfulOpenRef.current) {
-                onStopHeadful?.();
+                onStopHeadfulRef.current?.();
             }
         };
-    }, [onStopHeadful]);
+    }, [isHeadfulOpen, activeInspectActionId]);
 
     const handleAutoSave = useCallback((task?: Task) => {
         onSave(task || currentTaskRef.current, false);
@@ -437,31 +488,22 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
         handleAutoSave(next);
     };
 
-    const handleGenerateSelector = async (actionId: string, prompt: string) => {
-        const actionIndex = currentTask.actions.findIndex(a => a.id === actionId);
-        if (actionIndex === -1) return;
+    const handleToggleInspect = async () => {
+        const nextState = !isInspectMode;
+        setIsInspectLoading(true);
         try {
-            const res = await fetch('/api/tasks/generate-selector', {
+            const res = await fetch('/headful/inspect', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    task: currentTask,
-                    actionIndex,
-                    prompt
-                })
+                body: JSON.stringify({ enabled: nextState })
             });
-            if (!res.ok) {
-                const err = await res.json().catch(() => ({}));
-                throw new Error(err.error || 'Failed to generate selector');
-            }
-            const data = await res.json();
-            if (data.selector) {
-                updateAction(actionId, { selector: data.selector }, true);
-                onNotify('Selector generated by AI', 'success');
-            }
-        } catch (err: any) {
-            onNotify(err.message || 'Failed to generate selector', 'error');
-            throw err;
+            if (!res.ok) throw new Error('Failed to toggle inspect mode');
+            setIsInspectMode(nextState);
+            onNotify(`Inspect mode ${nextState ? 'enabled' : 'disabled'}`, 'success');
+        } catch (e) {
+            onNotify('Failed to toggle inspect mode', 'error');
+        } finally {
+            setIsInspectLoading(false);
         }
     };
 
@@ -552,6 +594,32 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
     }, []);
 
     const closeContextMenu = () => setContextMenu(null);
+
+    const handleActionPointerDown = useCallback((e: React.PointerEvent, id: string, index: number) => {
+        if (e.shiftKey || e.ctrlKey || e.metaKey) {
+            setSelectedActionIds(prev => {
+                const next = new Set(prev);
+                if (next.has(id)) next.delete(id); else next.add(id);
+                return next;
+            });
+            return;
+        }
+        setSelectedActionIds(new Set([id]));
+        const el = document.getElementById(`action-${id}`);
+        if (!el) return;
+        const rect = el.getBoundingClientRect();
+        dragPointerIdRef.current = e.pointerId;
+        setDragState({
+            id,
+            startY: e.clientY,
+            currentY: e.clientY,
+            height: rect.height,
+            index,
+            originTop: rect.top,
+            pointerOffset: e.clientY - rect.top
+        });
+        setDragOverIndex(index);
+    }, []);
 
     useEffect(() => {
         if (!contextMenu) return;
@@ -908,6 +976,8 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                         panStartRef.current = { x: e.clientX, y: e.clientY, offsetX: canvasOffset.x, offsetY: canvasOffset.y };
                         (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
                     } else if (e.button === 0 && !isInteractiveTarget(e.target as HTMLElement)) {
+                        // Don't start selection box if clicking inside an action block (drag will handle it)
+                        if ((e.target as HTMLElement).closest('[data-action-id]')) return;
                         setSelectionBox({ startX: e.clientX, startY: e.clientY, currentX: e.clientX, currentY: e.clientY });
                         if (!e.shiftKey && !e.ctrlKey && !e.metaKey) {
                             setSelectedActionIds(new Set());
@@ -1055,29 +1125,26 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                                                                 <ActionItem
                                                                     action={action}
                                                                     index={currentIndex}
-                                                                    isDragOver={false}
-                                                                    isDragging={false}
+                                                                    isDragOver={dragOverIndex === currentIndex && dragState?.id !== action.id}
+                                                                    isDragging={dragState?.id === action.id}
+                                                                    dragTransformY={dragState?.id === action.id ? dragState.currentY - dragState.startY : undefined}
                                                                     isSelected={selectedActionIds.has(action.id)}
                                                                     status={actionStatusById[action.id]}
                                                                     translateY={0}
                                                                     variables={currentTask.variables}
                                                                     availableTasks={availableTasks}
+                                                                    selectorOptions={selectorOptionsById[action.id]}
                                                                     onUpdate={(id, updates, save) => updateAction(id, updates, save)}
                                                                     onAutoSave={handleAutoSave}
                                                                     onOpenPalette={openActionPalette}
                                                                     onOpenContextMenu={openContextMenu}
-                                                                    onPointerDown={(e, id) => {
-                                                                        if (e.shiftKey || e.ctrlKey || e.metaKey) {
-                                                                            setSelectedActionIds(prev => {
-                                                                                const next = new Set(prev);
-                                                                                if (next.has(id)) next.delete(id); else next.add(id);
-                                                                                return next;
-                                                                            });
-                                                                        } else {
-                                                                            setSelectedActionIds(new Set([id]));
+                                                                    onPointerDown={handleActionPointerDown}
+                                                                    onStartInspect={(id: string) => {
+                                                                        setActiveInspectActionId(id);
+                                                                        if (!isHeadfulOpen) {
+                                                                            onOpenHeadful?.(currentTask.url || 'https://www.google.com', id, currentTask);
                                                                         }
                                                                     }}
-                                                                    onGenerateSelector={handleGenerateSelector}
                                                                 />
                                                             </div>
                                                             {/* Branch layout */}
@@ -1160,29 +1227,26 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                                                                 <ActionItem
                                                                     action={action}
                                                                     index={currentIndex}
-                                                                    isDragOver={false}
-                                                                    isDragging={false}
+                                                                    isDragOver={dragOverIndex === currentIndex && dragState?.id !== action.id}
+                                                                    isDragging={dragState?.id === action.id}
+                                                                    dragTransformY={dragState?.id === action.id ? dragState.currentY - dragState.startY : undefined}
                                                                     isSelected={selectedActionIds.has(action.id)}
                                                                     status={actionStatusById[action.id]}
                                                                     translateY={0}
                                                                     variables={currentTask.variables}
                                                                     availableTasks={availableTasks}
+                                                                    selectorOptions={selectorOptionsById[action.id]}
                                                                     onUpdate={(id, updates, save) => updateAction(id, updates, save)}
                                                                     onAutoSave={handleAutoSave}
                                                                     onOpenPalette={openActionPalette}
                                                                     onOpenContextMenu={openContextMenu}
-                                                                    onPointerDown={(e, id) => {
-                                                                        if (e.shiftKey || e.ctrlKey || e.metaKey) {
-                                                                            setSelectedActionIds(prev => {
-                                                                                const next = new Set(prev);
-                                                                                if (next.has(id)) next.delete(id); else next.add(id);
-                                                                                return next;
-                                                                            });
-                                                                        } else {
-                                                                            setSelectedActionIds(new Set([id]));
+                                                                    onPointerDown={handleActionPointerDown}
+                                                                    onStartInspect={(id) => {
+                                                                        setActiveInspectActionId(id);
+                                                                        if (!isHeadfulOpen) {
+                                                                            onOpenHeadful?.(currentTask.url || 'https://www.google.com', id, currentTask);
                                                                         }
                                                                     }}
-                                                                    onGenerateSelector={handleGenerateSelector}
                                                                 />
                                                             </div>
                                                             {/* + button between blocks */}
@@ -1281,6 +1345,10 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                 const targetIndex = currentTask.actions.findIndex(a => a.id === contextMenu.id);
                 const target = currentTask.actions[targetIndex];
                 if (!target) return null;
+
+                const isTargetSelected = selectedActionIds.has(target.id) && selectedActionIds.size > 1;
+                const affectedIds = isTargetSelected ? Array.from(selectedActionIds) : [target.id];
+
                 return (
                     <div
                         className="action-context-menu fixed z-50 w-[200px] bg-[#0b0b0b] border border-white/10 rounded-xl shadow-2xl p-2 text-[10px] font-bold uppercase tracking-widest text-white/80"
@@ -1288,21 +1356,29 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                     >
                         <button
                             onClick={() => {
-                                updateAction(target.id, { disabled: !target.disabled }, true);
+                                const nextState = !target.disabled;
+                                const nextActions = currentTask.actions.map(a =>
+                                    affectedIds.includes(a.id) ? { ...a, disabled: nextState } : a
+                                );
+                                setCurrentTask({ ...currentTask, actions: nextActions });
+                                handleAutoSave({ ...currentTask, actions: nextActions });
                                 closeContextMenu();
                             }}
                             className="w-full text-left px-3 py-2 rounded-lg hover:bg-white/5 transition-colors"
                         >
-                            {target.disabled ? 'Enable' : 'Disable'}
+                            {target.disabled ? 'Enable' : 'Disable'} {isTargetSelected ? 'All' : ''}
                         </button>
                         <button
                             onClick={() => {
-                                removeAction(target.id);
+                                const nextActions = currentTask.actions.filter(a => !affectedIds.includes(a.id));
+                                setCurrentTask({ ...currentTask, actions: nextActions });
+                                handleAutoSave({ ...currentTask, actions: nextActions });
                                 closeContextMenu();
+                                setSelectedActionIds(new Set());
                             }}
                             className="w-full text-left px-3 py-2 rounded-lg hover:bg-white/5 transition-colors text-red-400"
                         >
-                            Delete
+                            Delete {isTargetSelected ? 'All' : ''}
                         </button>
                         <button
                             onClick={() => {
@@ -1325,15 +1401,17 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                         </button>
                         <button
                             onClick={() => {
-                                const clone = createActionClone(target);
+                                const affectedActions = currentTask.actions.filter(a => affectedIds.includes(a.id));
+                                const clones = affectedActions.map(a => createActionClone(a));
                                 const next = [...currentTask.actions];
-                                next.splice(targetIndex + 1, 0, clone);
+                                next.splice(targetIndex + 1, 0, ...clones);
                                 setCurrentTask({ ...currentTask, actions: next });
+                                handleAutoSave({ ...currentTask, actions: next });
                                 closeContextMenu();
                             }}
                             className="w-full text-left px-3 py-2 rounded-lg hover:bg-white/5 transition-colors"
                         >
-                            Duplicate
+                            Duplicate {isTargetSelected ? 'All' : ''}
                         </button>
                     </div>
                 );
@@ -1521,6 +1599,23 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                                 </div>
                                 <div className="flex items-center gap-3">
                                     <button
+                                        type="button"
+                                        onClick={handleToggleInspect}
+                                        disabled={isInspectLoading || isExecuting}
+                                        className={`px-3 py-1.5 rounded-xl border text-[9px] font-bold uppercase tracking-widest transition-all flex items-center gap-2 disabled:opacity-30 disabled:cursor-not-allowed ${isInspectMode
+                                            ? 'border-green-500/30 bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                                            : 'border-white/10 text-white/60 hover:text-white hover:bg-white/10'}`}
+                                        title={isInspectMode ? 'Stop inspecting elements' : 'Highlight elements on hover'}
+                                    >
+                                        {isInspectLoading ? (
+                                            <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
+                                        ) : (
+                                            <MaterialIcon name={isInspectMode ? 'visibility_off' : 'center_focus_strong'} className="text-[14px]" />
+                                        )}
+                                        {isInspectMode ? 'Stop Inspect' : 'Inspect UI'}
+                                    </button>
+                                    <button
+                                        type="button"
                                         onClick={requestFullscreen}
                                         className="p-2 text-white/60 hover:text-white transition-colors"
                                         title="Toggle fullscreen"
@@ -1528,6 +1623,7 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                                         <MaterialIcon name="fullscreen" className="text-[16px]" />
                                     </button>
                                     <button
+                                        type="button"
                                         onClick={() => onStopHeadful?.()}
                                         className="p-2 text-white/60 hover:text-white transition-colors"
                                         title="Close Browser"

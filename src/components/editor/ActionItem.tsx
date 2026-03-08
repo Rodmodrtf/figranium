@@ -1,4 +1,4 @@
-import React, { memo, useState, useRef, useEffect } from 'react';
+import React, { memo, useState } from 'react';
 import { Action, Task, Variable, VarType } from '../../types';
 import MaterialIcon from '../MaterialIcon';
 import RichInput from '../RichInput';
@@ -97,8 +97,9 @@ interface ActionItemProps {
     onOpenContextMenu: (e: React.MouseEvent, id: string) => void;
     onPointerDown: (e: React.PointerEvent, id: string, index: number) => void;
     dragTransformY?: number;
-    onGenerateSelector?: (id: string, prompt: string) => Promise<void>;
+    onStartInspect?: (id: string) => void;
     isSelected?: boolean;
+    selectorOptions?: string[];
 }
 
 const ActionItem: React.FC<ActionItemProps> = memo(({
@@ -116,26 +117,11 @@ const ActionItem: React.FC<ActionItemProps> = memo(({
     onOpenContextMenu,
     onPointerDown,
     dragTransformY,
-    onGenerateSelector,
-    isSelected
+    onStartInspect,
+    isSelected,
+    selectorOptions
 }) => {
-    const [aiPromptOpen, setAiPromptOpen] = useState(false);
-    const [aiPrompt, setAiPrompt] = useState('');
-    const [aiGenerating, setAiGenerating] = useState(false);
-    const aiPopupRef = useRef<HTMLDivElement>(null);
     const [isExpanded, setIsExpanded] = useState(false);
-
-    useEffect(() => {
-        const handleClickOutside = (e: MouseEvent) => {
-            if (aiPopupRef.current && !aiPopupRef.current.contains(e.target as Node)) {
-                setAiPromptOpen(false);
-            }
-        };
-        if (aiPromptOpen) {
-            document.addEventListener('mousedown', handleClickOutside);
-        }
-        return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, [aiPromptOpen]);
     const statusClass = status === 'running'
         ? 'border-yellow-400/60'
         : status === 'success'
@@ -198,8 +184,7 @@ const ActionItem: React.FC<ActionItemProps> = memo(({
             onContextMenu={(e) => onOpenContextMenu(e, action.id)}
             className={`bg-black min-w-[280px] w-full max-w-sm mx-auto border p-5 rounded-2xl space-y-4 group/item relative transition-[transform,box-shadow,opacity,filter,background-color,border-color] duration-150 ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform select-none touch-none ${statusClass || (isSelected ? 'border-blue-500 ring-2 ring-blue-500/50' : 'border-white/20')} ${isDragging ? 'ring-2 ring-white/40 scale-[1.02] shadow-[0_30px_80px_rgba(0,0,0,0.45)] opacity-85 z-20 mx-auto' : ''} ${isDragOver && !isDragging ? 'ring-2 ring-blue-400/60 bg-blue-500/5' : ''} ${action.disabled ? 'opacity-40 grayscale' : ''}`}
             style={{
-                transform: transformStyle,
-                zIndex: aiPromptOpen ? 40 : undefined
+                transform: transformStyle
             }}
         >
             <div className="flex items-center justify-between cursor-pointer" onClick={() => setIsExpanded(!isExpanded)}>
@@ -226,64 +211,8 @@ const ActionItem: React.FC<ActionItemProps> = memo(({
                         <label className="text-[7px] font-bold text-gray-600 uppercase tracking-widest pl-1 block">
                             {action.type === 'scroll' ? 'Selector (Optional)' : 'Selector'}
                         </label>
-                        {aiPromptOpen && (
-                            <div ref={aiPopupRef} className="absolute right-0 top-6 z-30 w-64 bg-[#111] border border-white/10 rounded-xl shadow-2xl p-3 space-y-2">
-                                <div className="flex items-center justify-between">
-                                    <label className="text-[8px] font-bold text-gray-400 uppercase tracking-widest block">Describe Element</label>
-                                    <button
-                                        onClick={() => setAiPromptOpen(false)}
-                                        className="text-gray-500 hover:text-white transition-colors p-1 -mr-1"
-                                        title="Close"
-                                        aria-label="Close"
-                                    >
-                                        <MaterialIcon name="close" className="text-[12px]" />
-                                    </button>
-                                </div>
-                                <input
-                                    autoFocus
-                                    value={aiPrompt}
-                                    onChange={e => setAiPrompt(e.target.value)}
-                                    onKeyDown={async (e) => {
-                                        if (e.key === 'Enter' && aiPrompt.trim() && !aiGenerating && onGenerateSelector) {
-                                            setAiGenerating(true);
-                                            try {
-                                                await onGenerateSelector(action.id, aiPrompt);
-                                                setAiPromptOpen(false);
-                                                setAiPrompt('');
-                                            } finally {
-                                                setAiGenerating(false);
-                                            }
-                                        }
-                                    }}
-                                    disabled={aiGenerating}
-                                    placeholder="e.g. The green submit button"
-                                    className="w-full bg-white/5 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-white/50 transition-colors disabled:opacity-50"
-                                />
-                                <div className="flex justify-end pt-1">
-                                    <button
-                                        onClick={async () => {
-                                            if (aiPrompt.trim() && !aiGenerating && onGenerateSelector) {
-                                                setAiGenerating(true);
-                                                try {
-                                                    await onGenerateSelector(action.id, aiPrompt);
-                                                    setAiPromptOpen(false);
-                                                    setAiPrompt('');
-                                                } finally {
-                                                    setAiGenerating(false);
-                                                }
-                                            }
-                                        }}
-                                        disabled={aiGenerating || !aiPrompt.trim()}
-                                        className="bg-white/20 text-white hover:bg-white/30 px-3 py-1 rounded border border-white/30 text-[9px] font-bold uppercase tracking-widest transition-colors disabled:opacity-50 flex items-center gap-1"
-                                    >
-                                        {aiGenerating ? <div className="w-2.5 h-2.5 border border-white/30 border-t-white rounded-full animate-spin" /> : <MaterialIcon name="search" className="text-[10px]" />}
-                                        Find
-                                    </button>
-                                </div>
-                            </div>
-                        )}
                         <div className="bg-white/[0.03] border border-white/5 rounded-xl px-3 py-2 text-[11px] focus-within:border-white/20 transition-all flex items-center gap-2 relative">
-                            <div className="flex-1 min-w-0">
+                            <div className="flex-1 min-w-0 flex flex-col gap-1">
                                 <RichInput
                                     value={action.selector || ''}
                                     onChange={(v) => onUpdate(action.id, { selector: v })}
@@ -291,17 +220,31 @@ const ActionItem: React.FC<ActionItemProps> = memo(({
                                     variables={variables}
                                     placeholder={action.type === 'scroll' ? ".scroll-container or leave empty" : ".btn-primary"}
                                 />
+                                {selectorOptions && selectorOptions.length > 1 && (
+                                    <div className="flex flex-wrap gap-1 mt-1">
+                                        {selectorOptions.map((opt, i) => (
+                                            <button
+                                                key={i}
+                                                onClick={(e) => { e.stopPropagation(); onUpdate(action.id, { selector: opt }, true); }}
+                                                className={`text-[9px] px-1.5 py-0.5 rounded border transition-colors ${action.selector === opt ? 'bg-blue-500/20 border-blue-500/50 text-blue-300' : 'bg-white/[0.02] border-white/10 text-white/40 hover:text-white/80 hover:bg-white/[0.05]'}`}
+                                                title="Use this alternative selector"
+                                            >
+                                                {opt}
+                                            </button>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
-                            {onGenerateSelector && (
-                                <button
-                                    onClick={() => setAiPromptOpen(!aiPromptOpen)}
-                                    disabled={action.disabled}
-                                    className="text-white transition-colors focus:outline-none flex items-center justify-center opacity-50 hover:opacity-100 shrink-0 disabled:opacity-20 disabled:hover:opacity-20 disabled:cursor-not-allowed"
-                                    title="AI Selector Finder"
-                                >
-                                    <MaterialIcon name="auto_awesome" className="text-lg" />
-                                </button>
-                            )}
+                            <button
+                                onClick={() => {
+                                    if (onStartInspect) onStartInspect(action.id);
+                                }}
+                                disabled={action.disabled}
+                                className="text-white transition-colors focus:outline-none flex items-center justify-center opacity-50 hover:opacity-100 shrink-0 disabled:opacity-20 disabled:hover:opacity-20 disabled:cursor-not-allowed"
+                                title="Pick Selector in Browser"
+                            >
+                                <MaterialIcon name="my_location" className="text-lg" />
+                            </button>
                         </div>
                     </div>
                 )}

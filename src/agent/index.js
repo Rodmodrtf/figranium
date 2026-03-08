@@ -123,7 +123,8 @@ async function runAgent(data, options = {}) {
     let page;
     try {
         const useRotateProxies = String(rotateProxies).toLowerCase() === 'true' || rotateProxies === true;
-        browser = await launchBrowser({ rotateProxies: useRotateProxies });
+        const headless = options.headless !== undefined ? options.headless : true;
+        browser = await launchBrowser({ rotateProxies: useRotateProxies, headless });
 
         const recordingsDir = path.join(__dirname, '../../data/recordings');
         await fs.promises.mkdir(recordingsDir, { recursive: true });
@@ -250,6 +251,16 @@ async function runAgent(data, options = {}) {
             }
 
             const act = actions[index];
+
+            if (options.stopAtActionId && act.id === options.stopAtActionId) {
+                logs.push(`Handoff requested at action ${act.id}. Stop executing.`);
+                if (options.handoffContext) {
+                    try { await page.waitForLoadState('networkidle', { timeout: 2000 }); } catch (e) { }
+                    try { await page.waitForTimeout(500); } catch (e) { }
+                }
+                break;
+            }
+
             actionIdx += 1;
 
             if (JSON.stringify(act).includes('{$html}')) {
@@ -553,10 +564,13 @@ async function runAgent(data, options = {}) {
         };
 
         const video = page.video();
-        if (!statelessExecution) {
-            try { await context.storageState({ path: storageStateFile }); } catch { }
+        if (!options.handoffContext) {
+            if (!statelessExecution) {
+                try { await context.storageState({ path: storageStateFile }); } catch { }
+            }
+            try { await context.close(); } catch { }
         }
-        try { await context.close(); } catch { }
+
         if (video) {
             try {
                 const videoPath = await video.path();
@@ -578,6 +592,14 @@ async function runAgent(data, options = {}) {
                 console.error('Recording save failed:', e.message);
             }
         }
+
+        if (options.handoffContext) {
+            return {
+                ...outputData,
+                _handoff: { browser, context, page }
+            };
+        }
+
         try { await browser.close(); } catch { }
         return outputData;
     } catch (error) {
