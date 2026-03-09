@@ -13,11 +13,19 @@ const {
     MAX_EXECUTIONS,
     ALLOWED_IPS_TTL_MS
 } = require('./constants');
+
+const STORAGE_CACHE_TTL = 5000; // 5 seconds
 const { parseIpList, normalizeIp } = require('./utils');
 const { initDB, getPool } = require('./db');
 
 let dbInitPromise = null;
 let usingDisk = true;
+
+// User Storage
+let usersCache = null;
+let usersMtime = 0;
+let usersLoadPromise = null;
+let usersLastCheck = 0;
 
 async function ensureDB() {
     if (dbInitPromise) return dbInitPromise;
@@ -39,21 +47,75 @@ async function ensureDB() {
 // Load users is now asynchronous since DB query is async
 async function loadUsers() {
     const useDB = await ensureDB();
+    const now = Date.now();
     if (useDB) {
-        const pool = getPool();
-        const res = await pool.query('SELECT data FROM users ORDER BY id ASC');
-        return res.rows.map(r => r.data);
+        if (usersCache && (now - usersLastCheck < STORAGE_CACHE_TTL)) {
+            return [...usersCache];
+        }
+        if (usersLoadPromise) {
+            const result = await usersLoadPromise;
+            return [...result];
+        }
+        usersLoadPromise = (async () => {
+            try {
+                const pool = getPool();
+                const res = await pool.query('SELECT data FROM users ORDER BY id ASC');
+                usersCache = res.rows.map(r => r.data);
+                usersLastCheck = Date.now();
+            } catch (e) {
+                usersCache = usersCache || [];
+            }
+            usersLoadPromise = null;
+            return usersCache;
+        })();
+        const result = await usersLoadPromise;
+        return [...result];
     }
 
-    if (!fs.existsSync(USERS_FILE)) return [];
+    if (usersCache && (now - usersLastCheck < STORAGE_CACHE_TTL)) {
+        return [...usersCache];
+    }
+
+    let stat;
     try {
-        return JSON.parse(fs.readFileSync(USERS_FILE, 'utf8'));
-    } catch (e) {
+        stat = await fs.promises.stat(USERS_FILE);
+    } catch {
+        usersCache = [];
+        usersMtime = 0;
         return [];
     }
+
+    if (usersCache && usersMtime === stat.mtimeMs) {
+        usersLastCheck = now;
+        return [...usersCache];
+    }
+
+    if (usersLoadPromise) {
+        const result = await usersLoadPromise;
+        return [...result];
+    }
+
+    usersLoadPromise = (async () => {
+        try {
+            const data = await fs.promises.readFile(USERS_FILE, 'utf8');
+            usersCache = JSON.parse(data);
+            usersMtime = stat.mtimeMs;
+            usersLastCheck = Date.now();
+        } catch (e) {
+            usersCache = usersCache || [];
+            usersMtime = 0;
+        }
+        usersLoadPromise = null;
+        return usersCache;
+    })();
+
+    const result = await usersLoadPromise;
+    return [...result];
 }
 
 async function saveUsers(users) {
+    usersCache = users;
+    usersLastCheck = Date.now();
     const useDB = await ensureDB();
     if (useDB) {
         const pool = getPool();
@@ -74,7 +136,13 @@ async function saveUsers(users) {
         return;
     }
 
-    fs.writeFileSync(USERS_FILE, JSON.stringify(users, null, 2));
+    await fs.promises.writeFile(USERS_FILE, JSON.stringify(users, null, 2));
+    try {
+        const stat = await fs.promises.stat(USERS_FILE);
+        usersMtime = stat.mtimeMs;
+    } catch {
+        // ignore
+    }
 }
 
 // Task Storage
@@ -82,6 +150,7 @@ let tasksCache = null;
 let tasksMap = new Map(); // stores { task, index }
 let tasksLoadPromise = null;
 let tasksMtime = 0;
+let tasksLastCheck = 0;
 
 function syncTasksMap() {
     if (!tasksCache) {
@@ -105,9 +174,10 @@ function getTaskIndexById(id) {
 
 async function loadTasks() {
     const useDB = await ensureDB();
+    const now = Date.now();
     if (useDB) {
         // Simple cache without mtime check if we rely on in-memory operations to mutate it
-        if (tasksCache) return [...tasksCache];
+        if (tasksCache && (now - tasksLastCheck < STORAGE_CACHE_TTL)) return [...tasksCache];
 
         if (tasksLoadPromise) {
             const result = await tasksLoadPromise;
@@ -119,9 +189,10 @@ async function loadTasks() {
                 const pool = getPool();
                 const res = await pool.query('SELECT data FROM tasks');
                 tasksCache = res.rows.map(r => r.data);
+                tasksLastCheck = Date.now();
                 syncTasksMap();
             } catch (e) {
-                tasksCache = [];
+                tasksCache = tasksCache || [];
                 syncTasksMap();
             }
             tasksLoadPromise = null;
@@ -132,15 +203,21 @@ async function loadTasks() {
         return [...result];
     }
 
+    if (tasksCache && (now - tasksLastCheck < STORAGE_CACHE_TTL)) {
+        return [...tasksCache];
+    }
+
     let stat;
     try {
         stat = await fs.promises.stat(TASKS_FILE);
     } catch {
         tasksCache = [];
+        tasksMtime = 0;
         return [];
     }
 
     if (tasksCache && tasksMtime === stat.mtimeMs) {
+        tasksLastCheck = now;
         return [...tasksCache];
     }
 
@@ -154,9 +231,10 @@ async function loadTasks() {
             const data = await fs.promises.readFile(TASKS_FILE, 'utf8');
             tasksCache = JSON.parse(data);
             tasksMtime = stat.mtimeMs;
+            tasksLastCheck = Date.now();
             syncTasksMap();
         } catch (e) {
-            tasksCache = [];
+            tasksCache = tasksCache || [];
             tasksMtime = 0;
             syncTasksMap();
         }
@@ -170,6 +248,7 @@ async function loadTasks() {
 
 async function saveTasks(tasks) {
     tasksCache = tasks;
+    tasksLastCheck = Date.now();
     syncTasksMap();
     const useDB = await ensureDB();
     if (useDB) {
