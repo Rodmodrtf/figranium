@@ -240,8 +240,9 @@ const ActionItem: React.FC<ActionItemProps> = memo(({
                                     if (onStartInspect) onStartInspect(action.id);
                                 }}
                                 disabled={action.disabled}
-                                className="text-white transition-colors focus:outline-none flex items-center justify-center opacity-50 hover:opacity-100 shrink-0 disabled:opacity-20 disabled:hover:opacity-20 disabled:cursor-not-allowed"
+                                className="text-white transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50 flex items-center justify-center opacity-50 hover:opacity-100 shrink-0 disabled:opacity-20 disabled:hover:opacity-20 disabled:cursor-not-allowed rounded"
                                 title="Pick Selector in Browser"
+                                aria-label="Pick Selector in Browser"
                             >
                                 <MaterialIcon name="my_location" className="text-lg" />
                             </button>

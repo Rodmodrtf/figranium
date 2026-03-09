@@ -955,8 +955,9 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                     <div className="flex items-center gap-1">
                         <button
                             onClick={() => handleOpenCabinet('history')}
-                            className="w-8 h-8 rounded-lg flex items-center justify-center text-white/30 hover:text-white hover:bg-white/5 transition-all"
+                            className="w-8 h-8 rounded-lg flex items-center justify-center text-white/30 hover:text-white hover:bg-white/5 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
                             title="Version History"
+                            aria-label="Version History"
                         >
                             <MaterialIcon name="history" className="text-base" />
                         </button>
@@ -1042,8 +1043,9 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                                 </div>
                                 <button
                                     onClick={() => handleOpenCabinet('mode')}
-                                    className="p-2 rounded-lg hover:bg-white/10 text-white/30 hover:text-white transition-all focus:outline-none"
+                                    className="p-2 rounded-lg hover:bg-white/10 text-white/30 hover:text-white transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
                                     title="Task Settings"
+                                    aria-label="Task Settings"
                                 >
                                     <MaterialIcon name="settings" className="text-lg" />
                                 </button>
@@ -1299,8 +1301,9 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                         const newScale = Math.min(2, canvasScale * 1.2);
                         setCanvasScale(newScale);
                     }}
-                    className="w-8 h-8 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center text-sm font-bold"
+                    className="w-8 h-8 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center text-sm font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
                     title="Zoom In"
+                    aria-label="Zoom In"
                 >+</button>
                 <div className="text-[8px] text-center text-gray-500 font-bold select-none">{Math.round(canvasScale * 100)}%</div>
                 <button
@@ -1308,8 +1311,9 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                         const newScale = Math.max(0.25, canvasScale * 0.8);
                         setCanvasScale(newScale);
                     }}
-                    className="w-8 h-8 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center text-sm font-bold"
+                    className="w-8 h-8 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center text-sm font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
                     title="Zoom Out"
+                    aria-label="Zoom Out"
                 >−</button>
                 <button
                     onClick={() => {
@@ -1318,8 +1322,9 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
                         const vpWidth = vp ? vp.clientWidth : 1000;
                         setCanvasOffset({ x: (vpWidth - 400) / 2, y: 20 });
                     }}
-                    className="w-8 h-8 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center"
+                    className="w-8 h-8 rounded-lg text-white/60 hover:text-white hover:bg-white/10 transition-all flex items-center justify-center focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50"
                     title="Reset View"
+                    aria-label="Reset View"
                 >
                     <MaterialIcon name="fit_screen" className="text-sm" />
                 </button>
@@ -1493,7 +1498,9 @@ const EditorScreen: React.FC<EditorScreenProps> = ({
             >
                 <button
                     onClick={() => setIsResultsOpen(!isResultsOpen)}
-                    className={`absolute top-1/2 -left-8 -translate-y-1/2 w-8 h-24 bg-[#111] border border-r-0 border-white/10 rounded-l-xl flex items-center justify-center cursor-pointer shadow-[-8px_0_15px_rgba(0,0,0,0.5)] transition-all hover:bg-white/5 hover:w-10 hover:-left-10`}
+                    className={`absolute top-1/2 -left-8 -translate-y-1/2 w-8 h-24 bg-[#111] border border-r-0 border-white/10 rounded-l-xl flex items-center justify-center cursor-pointer shadow-[-8px_0_15px_rgba(0,0,0,0.5)] transition-all hover:bg-white/5 hover:w-10 hover:-left-10 focus:outline-none focus-visible:ring-2 focus-visible:ring-white/50`}
+                    aria-label={isResultsOpen ? "Close Results Drawer" : "Open Results Drawer"}
+                    title={isResultsOpen ? "Close Results Drawer" : "Open Results Drawer"}
                 >
                     <MaterialIcon name="drag_indicator" className={`text-white/30 text-xl transition-transform duration-500 ${isResultsOpen ? 'rotate-180' : ''}`} />
                 </button>
