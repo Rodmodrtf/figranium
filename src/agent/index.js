@@ -605,6 +605,12 @@ async function runAgent(data, options = {}) {
     } catch (error) {
         console.error('Agent Error:', error);
         try {
+            if (context && !statelessExecution) {
+                const storageStateFile = getStorageStateFile();
+                await context.storageState({ path: storageStateFile });
+            }
+        } catch { }
+        try {
             if (context) await context.close();
         } catch { }
         if (browser) await browser.close();
