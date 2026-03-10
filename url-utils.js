@@ -22,15 +22,32 @@ function isPrivateIP(ip) {
     }
     if (net.isIPv6(ip)) {
         const lower = ip.toLowerCase();
+        const parts = lower.split(':');
+        const last = parts[parts.length - 1];
 
         // Handle IPv4-mapped IPv6 addresses (::ffff:1.2.3.4 or ::ffff:7f00:1)
-        if (lower.startsWith('::ffff:')) {
-            const parts = lower.split(':');
-            const last = parts[parts.length - 1];
-            if (net.isIPv4(last)) {
-                return isPrivateIP(last);
+        const ffffIndex = parts.indexOf('ffff');
+        if (ffffIndex !== -1) {
+            const prefixAllZeros = parts.slice(0, ffffIndex).every(p => p === '' || p === '0');
+            if (prefixAllZeros) {
+                if (net.isIPv4(last)) {
+                    return isPrivateIP(last);
+                }
+                const p1 = parseInt(parts[parts.length - 2], 16);
+                const p2 = parseInt(parts[parts.length - 1], 16);
+                if (!isNaN(p1) && !isNaN(p2)) {
+                    return isPrivateIP(`${(p1 >> 8) & 0xff}.${p1 & 0xff}.${(p2 >> 8) & 0xff}.${p2 & 0xff}`);
+                }
             }
-            if (parts.length >= 5) {
+        }
+
+        // Handle IPv4-compatible IPv6 addresses (::1.2.3.4 or ::7f00:1)
+        if (ffffIndex === -1) {
+            const prefixAllZeros = parts.slice(0, -2).every(p => p === '' || p === '0');
+            if (prefixAllZeros) {
+                if (net.isIPv4(last)) {
+                    return isPrivateIP(last);
+                }
                 const p1 = parseInt(parts[parts.length - 2], 16);
                 const p2 = parseInt(parts[parts.length - 1], 16);
                 if (!isNaN(p1) && !isNaN(p2)) {
@@ -96,6 +113,10 @@ async function validateUrl(urlStr) {
             }
         }
     } catch (e) {
+        if (e.message === 'Access to private network is restricted') {
+            throw e;
+        }
+
         // If it's already an IP address, check it directly
         if (net.isIP(hostname)) {
             if (isPrivateIP(hostname)) {
