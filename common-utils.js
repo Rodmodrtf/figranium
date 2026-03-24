@@ -5,6 +5,11 @@ const parseBooleanFlag = (value) => {
     return normalized === 'true' || normalized === '1';
 };
 
+const sanitizeRunId = (runId) => {
+    if (!runId) return null;
+    return String(runId).replace(/[^a-zA-Z0-9_-]/g, '');
+};
+
 const parseValue = (value) => {
     if (typeof value !== 'string') return value;
     const trimmed = value.trim();
@@ -98,7 +103,9 @@ const parseCsv = (input) => {
 };
 
 const csvEscape = (value) => {
-    const text = value === undefined || value === null ? '' : String(value);
+    if (value === undefined || value === null || value === '') return '';
+    const text = String(value);
+    // ⚡ Bolt: Fast-path for simple values that don't need escaping
     if (/[",\n\r]/.test(text) || /^\s|\s$/.test(text)) {
         return `"${text.replace(/"/g, '""')}"`;
     }
@@ -121,14 +128,16 @@ const toCsvString = (raw) => {
     const rows = Array.isArray(raw) ? raw : [raw];
     if (rows.length === 0) return '';
 
-    const allKeys = [];
+    // ⚡ Bolt: Use a Set for unique key collection to reduce complexity from O(N * K^2) to O(N * K)
+    const allKeysSet = new Set();
     rows.forEach((row) => {
         if (row && typeof row === 'object' && !Array.isArray(row)) {
             Object.keys(row).forEach((key) => {
-                if (!allKeys.includes(key)) allKeys.push(key);
+                allKeysSet.add(key);
             });
         }
     });
+    const allKeys = Array.from(allKeysSet);
 
     if (allKeys.length === 0) {
         const lines = rows.map((row) => {
@@ -156,9 +165,9 @@ const parseCoords = (value) => {
     return null;
 };
 
-const cookieMatches = (cookie, requestUrl) => {
+const cookieMatches = (cookie, requestUrlOrObj) => {
     try {
-        const url = new URL(requestUrl);
+        const url = (typeof requestUrlOrObj === 'string') ? new URL(requestUrlOrObj) : requestUrlOrObj;
         const host = url.hostname.toLowerCase();
         const path = url.pathname || '/';
 
@@ -192,6 +201,7 @@ const cookieMatches = (cookie, requestUrl) => {
 
 module.exports = {
     parseBooleanFlag,
+    sanitizeRunId,
     parseCoords,
     parseValue,
     parseCsv,

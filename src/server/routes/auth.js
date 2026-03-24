@@ -19,10 +19,37 @@ router.post('/setup', authRateLimiter, async (req, res) => {
     const users = await loadUsers();
     if (users.length > 0) return res.status(403).json({ error: 'ALREADY_SETUP' });
     const { name, email, password } = req.body;
-    const normalizedEmail = String(email || '').trim().toLowerCase();
-    if (!name || !normalizedEmail || !password) return res.status(400).json({ error: 'MISSING_FIELDS' });
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+    // Strict type and length validation
+    if (typeof name !== 'string' || typeof email !== 'string' || typeof password !== 'string') {
+        return res.status(400).json({ error: 'INVALID_INPUT_TYPE', message: 'Name, email, and password must be strings.' });
+    }
+
+    const trimmedName = name.trim();
+    const normalizedEmail = email.trim().toLowerCase();
+
+    if (!trimmedName || !normalizedEmail || !password) {
+        return res.status(400).json({ error: 'MISSING_FIELDS' });
+    }
+
+    if (trimmedName.length > 100) {
+        return res.status(400).json({ error: 'NAME_TOO_LONG', message: 'Name must be 100 characters or less.' });
+    }
+
+    // Basic email validation: limit length and use a ReDoS-safe regex.
+    if (normalizedEmail.length > 255 || !/^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/.test(normalizedEmail)) {
+        return res.status(400).json({ error: 'INVALID_EMAIL' });
+    }
+
+    // Enforce password length constraints
+    if (password.length < 8) {
+        return res.status(400).json({ error: 'PASSWORD_TOO_SHORT' });
+    }
+    if (password.length > 128) {
+        return res.status(400).json({ error: 'PASSWORD_TOO_LONG', message: 'Password must be 128 characters or less.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(password, 12);
     const newUser = { id: Date.now(), name, email: normalizedEmail, password: hashedPassword };
     await saveUsers([newUser]);
 
@@ -45,11 +72,35 @@ router.post('/setup', authRateLimiter, async (req, res) => {
 
 router.post('/login', authRateLimiter, async (req, res) => {
     const { email, password } = req.body;
-    const normalizedEmail = String(email || '').trim().toLowerCase();
+
+    // Strict type and length validation
+    if (typeof email !== 'string' || typeof password !== 'string') {
+        // If types are wrong, we still want to maintain timing safety if possible,
+        // but since we can't even get an email to look up, we just reject.
+        // To be perfectly timing-safe we'd need to do a dummy hash here too.
+        const DUMMY_HASH = '$2b$12$ROIlwVQgCzLuLoE6wDpqde0hhUzGqMywgkLIrOE5lom6P2F0fhbBO';
+        await bcrypt.compare('dummy', DUMMY_HASH);
+        return res.status(400).json({ error: 'INVALID_INPUT_TYPE', message: 'Email and password must be strings.' });
+    }
+
+    if (email.length > 255 || password.length > 128) {
+        const DUMMY_HASH = '$2b$12$ROIlwVQgCzLuLoE6wDpqde0hhUzGqMywgkLIrOE5lom6P2F0fhbBO';
+        await bcrypt.compare('dummy', DUMMY_HASH);
+        return res.status(400).json({ error: 'INPUT_TOO_LONG' });
+    }
+
+    const normalizedEmail = email.trim().toLowerCase();
     const users = await loadUsers();
     const user = users.find(u => String(u.email || '').toLowerCase() === normalizedEmail);
-    if (user && await bcrypt.compare(password, user.password)) {
 
+    // Timing-safe login: Always perform a bcrypt.compare to prevent user enumeration via timing attacks.
+    // If user not found, compare against a dummy hash to maintain consistent response timing.
+    // The dummy hash uses 12 rounds to match the rounds used during user setup.
+    const DUMMY_HASH = '$2b$12$ROIlwVQgCzLuLoE6wDpqde0hhUzGqMywgkLIrOE5lom6P2F0fhbBO'; // dummy bcrypt hash (12 rounds)
+    const hashToCompare = user ? user.password : DUMMY_HASH;
+    const isPasswordValid = await bcrypt.compare(password || '', hashToCompare);
+
+    if (user && isPasswordValid) {
         req.session.regenerate(async (err) => {
             if (err) {
                 console.error('[AUTH] Login session regenerate failed:', err);

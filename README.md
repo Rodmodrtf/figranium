@@ -14,6 +14,7 @@ Figranium (formerly Doppelganger) is a self‑hosted, block-first automation con
 - **Task API + CLI** — trigger saved tasks via HTTP (`/tasks/:id/api`) or `npx figranium` while passing variables and securing runs with the API key you control.
 - **Captures & storage** — automatically store screenshots/recordings and cookies; view them in the captures tab, reset storage, or download built assets.
 - **Proxy management** — host, rotate, or import HTTP/SOCKS proxies, flag a default, and toggle rotation per task.
+- **Task Scheduling** — run workflows automatically using visual interval/daily/weekly/monthly settings or advanced cron expressions.
 - **Security-first** — session authentication, IP allowlists, secret management, and audit trails live entirely inside your environment.
 
 # Architecture Snapshot
@@ -26,7 +27,7 @@ Figranium (formerly Doppelganger) is a self‑hosted, block-first automation con
 2. **Backend**  
    - `server.js` (Express) handles auth (`/api/auth`), task metadata, hooks into Playwright, and exposes `/api/settings/*` for runtime configuration.
    - Requirements: Node 18+ (LTS), Playwright bundled via `npm install`.
-   - Storage is plain‑file: `data/` for proxies and allowlists, `public/captures` for visuals, `storage_state.json` for cookies.
+   - Storage is plain‑file: `data/` for proxies and allowlists, `public/captures` for visuals, and browser session cookies stored internally.
 
 3. **Scripts & automation**  
    - `scripts/postinstall.js` runs when dependencies install (keep an eye if you customize).
@@ -71,7 +72,6 @@ docker run -d \
   -e SESSION_SECRET=replace_with_long_random_value \
   -v $(pwd)/data:/app/data \
   -v $(pwd)/public:/app/public \
-  -v $(pwd)/storage_state.json:/app/storage_state.json \
   figranium/figranium
 ```
 
@@ -113,7 +113,7 @@ npx figranium
 
 If you prefer not to install globally, clone the repo, run `npm install` to pull dependencies, and then run `npx figranium` inside that folder. This ensures `npx` can resolve the package from the local registry/cache while still shipping the same dashboard experience.
 
-Set `SESSION_SECRET` and optionally mount `data/`, `public/`, and `storage_state.json` (match the Docker volume layout). The CLI spins up the same Express/Playwright stack and opens the browser-based dashboard at `http://localhost:11345` unless you override `PORT`.
+Set `SESSION_SECRET` and optionally mount `data/` and `public/` (match the Docker volume layout). The CLI spins up the same Express/Playwright stack and opens the browser-based dashboard at `http://localhost:11345` unless you override `PORT`.
 
 ## Session Secret
 
@@ -152,7 +152,7 @@ Proxy rotation also respects `data/proxies.json` (see below), and `data/allowed_
 # UI Walkthrough
 
 - **Dashboard** — quick stats, recent runs, and a “New Task” entry point (block or agent).
- - **Task Editor** — drag blocks (click, type, wait, scroll, press, JavaScript); toggle “Rotate Proxies”; run/stop tasks; inspect results with pins & logs.
+ - **Task Editor** — drag blocks (click, type, wait, scroll, press, JavaScript); toggle “Rotate Proxies”; schedule runs via the **Schedule** tab; run/stop tasks; inspect results with pins & logs.
  - **Captures** — review screenshots/recordings stored under `public/captures`; delete individually or refresh.
  - **Executions** — historical runs with detail drill-down and the ability to re-run or download results.
  - **Settings**
@@ -203,6 +203,12 @@ If enabled, provide the `x-api-key` header or `Authorization: Bearer <key>`. For
 *   **`PUT /api/tasks/:id`**: Update an existing task profile.
 *   **`POST /api/tasks/:id/api`**: Execute a predefined task. Pass `{"variables": {}}` in the body to override execution variables dynamically.
 
+### Scheduling API
+*   **`GET /api/schedules`**: List all scheduled tasks and their status.
+*   **`POST /api/schedules/:taskId`**: Create or update a schedule (supports visual config or raw cron).
+*   **`DELETE /api/schedules/:taskId`**: Disable/remove a schedule.
+*   **`GET /api/schedules/status/all`**: Get an overview of all active scheduled jobs.
+
 ### Execution & Logging API
 *   **`GET /api/executions`**: Retrieve paginated logs of all past runs.
 *   **`GET /api/executions/:id`**: View the exact steps, result JSON, and configuration state of a specific run.
@@ -211,7 +217,7 @@ If enabled, provide the `x-api-key` header or `Authorization: Bearer <key>`. For
 *   **`GET /api/data/captures`**: List generated screenshots, videos, and downloads.
 *   **`DELETE /api/data/captures/:name`**: Delete a specific capture.
 *   **`POST /api/clear-screenshots`**: Removes all files in `public/captures`.
-*   **`POST /api/clear-cookies`**: Deletes `storage_state.json`.
+*   **`POST /api/clear-cookies`**: Clears stored browser session cookies.
 
 # Task Scripting Tips
 
@@ -229,7 +235,17 @@ If enabled, provide the `x-api-key` header or `Authorization: Bearer <key>`. For
 2. Add conditional `javascript` blocks to test for specific DOM elements; use the retry/timer controls per block.
 3. Attach `extract` (JSON output) or `screenshot` actions before submitting so you can inspect results in the Captures tab.
 4. Toggle “Rotate Proxies” if you need egress diversity and pick a default proxy on Settings → Proxies.
-5. Save the task, pin results you care about, and use the `POST /tasks/:id/api` endpoint with variables like `{"variables":{"query":"books"}}` to run it from automation tools.
+5. Use the **Schedule** tab to set up automated runs (e.g., every day at 9 AM or every 15 minutes).
+6. Save the task, pin results you care about, and use the `POST /tasks/:id/api` endpoint with variables like `{"variables":{"query":"books"}}` to run it from automation tools.
+
+# Task Scheduling
+
+Figranium includes a built-in scheduler that handles automated task execution without requiring external cron jobs or triggers.
+
+- **Visual Mode**: Easily configure periodic runs (every X minutes), hourly, daily, weekly (select specific days), or monthly runs.
+- **Advanced Mode**: Use standard 5-field cron expressions (`* * * * *`) for complex schedules.
+- **Persistence**: Schedules are stored within the task metadata and persist across server restarts.
+- **Monitoring**: The "Next Run" and "Last Run" status (including duration) are visible directly in the Task Editor's Schedule tab.
 
 # Testing & Validation
 
@@ -246,14 +262,14 @@ If enabled, provide the `x-api-key` header or `Authorization: Bearer <key>`. For
 # Data Lifecycle
 
 - Captures land in `public/captures`; regular cleanups can be scripted via `POST /api/clear-screenshots`.
-- Cookies live in `storage_state.json`. Back up this file before clearing cookies via the UI or `/api/clear-cookies`.
+- Cookies are stored internally; clear them via the UI or `/api/clear-cookies`.
 - Proxy lists, user-agent preferences, and settings persist under `data/` (look for `proxies.json`, `allowed_ips.json`, etc.) — treat this directory as your config source control.
 - Use `Storage` controls in Settings to clear data after experimentation cycles, and keep `layouts` or `version` info tracked via `localStorage` as shown in `src/components/SettingsScreen.tsx`.
 
 # Maintenance
 
 - The project is governed by the **[GNU General Public License v3.0](https://github.com/figranium/figranium/blob/main/LICENSE)**, which grants rights for distribution and modification as per the GPLv3 terms.
-- Keep `data/` and `storage_state.json` backed up if you rely on historical cookies or proxies.
+- Keep `data/` backed up if you rely on historical proxies and settings.
 - Release updates by pulling `figranium/figranium` (Docker) or `npm i figranium` (npm). The Settings view always displays the current package version.
 - Contributions: follow `.github/` templates, respect `CONTRIBUTING.md`, and run available lint/test scripts if you touch critical areas.
 
@@ -269,28 +285,29 @@ If enabled, provide the `x-api-key` header or `Authorization: Bearer <key>`. For
 - [ ] **Click-and-drag block** — add an action that does drag gestures (selecting text, moving items) so tasks can simulate click-and-drag flows.
 - [x] **Recording controls** — Task editor now exposes a “Disable automated recording” switch in the general settings panel so workflows can skip video capture on a per-task basis.
 - [x] **File downloads** — add explicit support for agent tasks to download files (PDFs, CSVs, etc.) directly from target pages, then surface those downloads in the UI so users can preview or export them without sifting through captures.
-- [x] **Stateless mode** — Tasks now have a “Stateless execution” toggle alongside the recording controls so each run can skip `storage_state.json`, ensuring no cookies or local storage persist between executions for that workflow.
+- [x] **Stateless mode** — Tasks now have a “Stateless execution” toggle alongside the recording controls so each run starts with no cookies or local storage, ensuring nothing persists between executions for that workflow.
 - [ ] **Adblocking filters** — add controls so execution contexts can enable built-in ad/malware filtering (e.g., via hosts file overrides or request blocking) to reduce noise on sensitive sites.
-- [ ] **Extraction response mode** — add a Settings switch so users can choose whether the UI returns HTML+data (for debugging) or data-only payloads when extraction scripts run.
+- [ ] **Extraction response mode** — add a Settings switch so users can choose whether the API returns HTML+data (for debugging) or data-only payloads when extraction scripts run.
 - [ ] **Folder organization** — group tasks, assets, and captures into named folders so operators can browse, filter, and download collections per workflow.
 - [ ] **Stable capture retention** — add filtering, pinning, and archiving in captures tab so teams can keep compliance records.
 - [ ] **Workspace templates** — allow saving and sharing workspace presets (layout + default proxies/agents) so new team members can onboard with pre-configured setups.
 - [ ] **Geo-targeted exits** — allow choosing proxy regions for tasks so you can pin the apparent location before running a job.
-- [ ] **Complete anti-detection coverage** — follow browserscan.net's anti-detection checklist (fingerprints, headers, fonts, WebRTC, etc.) so automated runs mimic real browsers across task executions.
+- [x] **Complete anti-detection coverage** — follow browserscan.net's anti-detection checklist (fingerprints, headers, fonts, WebRTC, etc.) so automated runs mimic real browsers across task executions.
 - [ ] **Session recording redaction** — add toggles to redact sensitive fields (passwords, credit cards) from recordings/logs before storing them.
 - [ ] **Two-factor authentication** — add optional TOTP/second-factor support to Settings/Auth so operators can lock down the UI with 2FA.
 - [ ] **AI-assisted fixing** — add an “AI auto-fix” helper that suggests layout, selector, and proxy tweaks after failed runs, letting teams approve or discard the proposed changes without switching contexts.
 - [ ] **Companion app** — build a lightweight companion app that mirrors critical dashboard notifications (failures, capture completions, proxy issues) so operators can stay informed without opening the full UI.
-- [ ] **Community presets hub** — build a marketplace where users can publish task/workspace presets, browse and download others’ submissions, and choose to offer each preset either for free or as a paid template so creators can monetize standalone workflows while keeping the free option available.
+- [x] **Community presets hub** — build a marketplace where users can publish task/workspace presets, browse and download others’ submissions, and choose to offer each preset either for free or as a paid template so creators can monetize standalone workflows while keeping the free option available.
 - [ ] **Database Tab / Local CRM** — add a built-in spreadsheet-like interface for viewing and managing extracted data (CRM-style) entirely within the app, without requiring external tools.
 - [ ] **iframe interaction support** — add the ability to target and interact with elements inside iframes in the task editor.
 - [x] **Autosave** — automatically persist task changes and editor state at regular intervals so operators don't lose work on long-running or complex workflow designs.
-- [ ] **Highlight tool** — add a feature to highlight elements on the page (similar to a browser's inspect tool) to easily pick selectors and build workflows.
-- [ ] **Cron triggers** — add support for scheduling tasks with cron expressions so workflows can run automatically on defined intervals.
+- [x] **Highlight tool** — add a feature to highlight elements on the page (similar to a browser's inspect tool) to easily pick selectors and build workflows.
+- [x] **Cron triggers** — add support for scheduling tasks with cron expressions so workflows can run automatically on defined intervals.
+- [ ] **Canvas notes** — add sticky-note-style annotations to the block canvas so operators can leave freeform comments and context alongside their workflows without affecting execution.
 
 # Security Considerations
 
-- Never commit your `SESSION_SECRET`, API keys, or `storage_state.json` into shared repositories.
+- Never commit your `SESSION_SECRET` or API keys into shared repositories.
 - Use `ALLOWED_IPS`/`data/allowed_ips.json` to gate the UI when deploying to a network-exposed host.
 - Rotate API keys periodically via Settings, and log all automation runs through the Executions tab for audit purposes.
 - Playwright runs inside the same Node process; keep dependencies up to date and rebuild `node_modules` after significant OS patches.
@@ -307,7 +324,7 @@ If enabled, provide the `x-api-key` header or `Authorization: Bearer <key>`. For
 If you find this project helpful, please consider supporting its development. Your contributions help keep the project maintained and the lights on!
 
 <div align="center">
-  <a href="https://ko-fi.com/asernasr" target="_blank">
+  <a href="https://ko-fi.com/figranium" target="_blank">
     <img src="https://img.shields.io/badge/Support%20on-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white" alt="Support on Ko-fi" />
   </a>
 </div>

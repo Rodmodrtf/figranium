@@ -1,29 +1,34 @@
-const { chromium } = require('playwright');
+const { chromium } = require('./stealth-chromium');
 const fs = require('fs');
 const path = require('path');
 const { getProxySelection } = require('./proxy-rotation');
 const { selectUserAgent } = require('./user-agent-settings');
 const { validateUrl } = require('./url-utils');
-const { parseBooleanFlag, cookieMatches } = require('./common-utils');
+const { parseBooleanFlag } = require('./common-utils');
 const { Mutex } = require('./src/server/utils');
+
+const HEADFUL_PROFILE_DIR = path.join(__dirname, 'data', 'browser-profile-headful');
+const HEADFUL_STATE_PATH = path.join(__dirname, 'data', 'headful-storage-state.json');
 
 const headfulMutex = new Mutex();
 
+async function saveHeadfulStorageState(context) {
+    if (!context) return;
+    try {
+        const state = await context.storageState();
+        const now = Date.now() / 1000;
+        const cookies = (state.cookies || []).filter(c => !c.expires || c.expires === -1 || c.expires > now);
+        if (cookies.length === 0) return;
+        await fs.promises.mkdir(path.join(__dirname, 'data'), { recursive: true });
+        await fs.promises.writeFile(HEADFUL_STATE_PATH, JSON.stringify({ cookies }, null, 2));
+        console.log(`[HEADFUL] Saved ${cookies.length} cookies to headful-storage-state.json`);
+    } catch (e) {
+        console.error('[HEADFUL] Failed to save storage state:', e.message);
+    }
+}
+
 const EventEmitter = require('events');
 const headfulEventEmitter = new EventEmitter();
-
-const STORAGE_STATE_PATH = path.join(__dirname, 'storage_state.json');
-const STORAGE_STATE_FILE = (() => {
-    try {
-        if (fs.existsSync(STORAGE_STATE_PATH)) {
-            const stat = fs.statSync(STORAGE_STATE_PATH);
-            if (stat.isDirectory()) {
-                return path.join(STORAGE_STATE_PATH, 'storage_state.json');
-            }
-        }
-    } catch { }
-    return STORAGE_STATE_PATH;
-})();
 
 let activeSession = null;
 
@@ -32,14 +37,14 @@ const teardownActiveSession = async () => {
     try {
         if (activeSession.interval) clearInterval(activeSession.interval);
     } catch { }
-    try {
-        if (activeSession.context && !activeSession.stateless) {
-            await activeSession.context.storageState({ path: STORAGE_STATE_FILE });
-        }
-    } catch { }
+    if (activeSession.context && !activeSession.statelessExecution) {
+        await saveHeadfulStorageState(activeSession.context);
+    }
     try {
         if (activeSession.browser) {
             await activeSession.browser.close();
+        } else if (activeSession.context) {
+            await activeSession.context.close();
         }
     } catch { }
     activeSession = null;
@@ -60,9 +65,9 @@ async function runHeadful(data, options = {}) {
     const statelessExecutionRaw = data.statelessExecution;
     const statelessExecution = parseBooleanFlag(statelessExecutionRaw);
 
-    const inspectModeEnabled = true;
+    const inspectModeEnabled = !!(data.targetActionId);
 
-    activeSession = { status: 'starting', startedAt: Date.now(), stateless: statelessExecution, inspectModeEnabled };
+    activeSession = { status: 'starting', startedAt: Date.now(), inspectModeEnabled };
 
     const selectedUA = await selectUserAgent(false);
 
@@ -75,7 +80,7 @@ async function runHeadful(data, options = {}) {
         if (data.targetActionId && data.taskSnapshot) {
             const { runAgent } = require('./src/agent');
             try {
-                const reqScope = { ...data.taskSnapshot, variables: data.variables || data.taskVariables || {} };
+                const reqScope = { ...data.taskSnapshot, variables: data.variables || data.taskVariables || {}, statelessExecution: true, disableRecording: true };
                 if (data.url) reqScope.url = data.url;
 
                 const result = await runAgent(reqScope, {
@@ -95,76 +100,50 @@ async function runHeadful(data, options = {}) {
         }
 
         if (!browser) {
-            const launchOptions = {
-                headless: false,
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu',
-                    '--window-size=1920,1080',
-                    '--window-position=0,0'
-                ]
-            };
             const selection = getProxySelection(rotateProxies);
-            if (selection.proxy) {
-                launchOptions.proxy = selection.proxy;
+            const hasProxy = !!selection.proxy;
+
+            const args = [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--window-size=1920,1080',
+                '--window-position=0,0',
+                '--start-maximized',
+                '--dns-prefetch-disable',
+                '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'
+            ];
+            if (!hasProxy) {
+                args.push(
+                    '--enable-features=DnsOverHttps',
+                    '--dns-over-https-mode=secure',
+                    '--dns-over-https-templates=https://cloudflare-dns.com/dns-query'
+                );
             }
-            browser = await chromium.launch(launchOptions);
 
             const contextOptions = {
                 viewport: null,
                 userAgent: selectedUA,
                 locale: 'en-US',
-                timezoneId: 'America/New_York'
+                timezoneId: 'America/New_York',
+                permissions: ['clipboard-read', 'clipboard-write'],
+                ...(selection.proxy ? { proxy: selection.proxy } : {})
             };
 
-            if (!statelessExecution && fs.existsSync(STORAGE_STATE_FILE)) {
-                contextOptions.storageState = STORAGE_STATE_FILE;
-            }
-
-            contextOptions.permissions = ['clipboard-read', 'clipboard-write'];
-            context = await browser.newContext(contextOptions);
-        }
-
-        let preloadedCookies = [];
-        if (fs.existsSync(STORAGE_STATE_FILE)) {
-            try {
-                const state = JSON.parse(fs.readFileSync(STORAGE_STATE_FILE, 'utf8'));
-                preloadedCookies = state.cookies || [];
-            } catch (e) { }
-        }
-
-        await context.route('**/*', async (route) => {
-            const request = route.request();
-            const requestUrl = request.url();
-            const resourceType = request.resourceType();
-
-            const isDataRequest = ['document', 'script', 'xhr', 'fetch'].includes(resourceType);
-            if (isDataRequest && preloadedCookies.length > 0) {
-                const filteredCookies = preloadedCookies.filter(cookie => cookieMatches(cookie, requestUrl));
-                if (filteredCookies.length > 0) {
-                    const fileCookieMap = new Map();
-                    filteredCookies.forEach(c => fileCookieMap.set(c.name, c.value));
-
-                    const existingCookieHeader = request.headers()['cookie'] || '';
-                    const existingCookies = existingCookieHeader.split(';').filter(Boolean).map(s => s.trim());
-
-                    existingCookies.forEach(s => {
-                        const [name, ...valParts] = s.split('=');
-                        const val = valParts.join('=');
-                        if (!fileCookieMap.has(name)) {
-                            fileCookieMap.set(name, val);
-                        }
-                    });
-
-                    const cookieHeader = Array.from(fileCookieMap.entries()).map(([n, v]) => `${n}=${v}`).join('; ');
-                    const headers = { ...request.headers(), 'cookie': cookieHeader };
-                    return route.continue({ headers });
+            if (statelessExecution) {
+                browser = await chromium.launch({ headless: false, args, ...(selection.proxy ? { proxy: selection.proxy } : {}) });
+                context = await browser.newContext(contextOptions);
+            } else {
+                await fs.promises.mkdir(HEADFUL_PROFILE_DIR, { recursive: true });
+                // Remove stale lock files left by a previous container/process to prevent launch failure
+                for (const lockFile of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
+                    try { await fs.promises.unlink(path.join(HEADFUL_PROFILE_DIR, lockFile)); } catch { }
                 }
+                context = await chromium.launchPersistentContext(HEADFUL_PROFILE_DIR, { headless: false, args, ...contextOptions });
+                browser = context.browser();
             }
-            route.continue();
-        });
+        }
 
         const inspectInitFn = () => {
             Object.defineProperty(window, 'open', { writable: true, configurable: true, value: () => null });
@@ -219,8 +198,14 @@ async function runHeadful(data, options = {}) {
                         if (!id) return true;
                         // Long numbers, UUIDs, explicit long strings
                         if (/\d{4,}/.test(id) || /^[0-9a-f]{8}-/i.test(id) || id.length > 30 || /[0-9]{3,}/.test(id)) return true;
-                        // Google-style obfuscated classes (e.g. gLFyf, APjFqb)
-                        if (/^[a-zA-Z]{4,8}$/.test(id) && /[A-Z]/.test(id) && /[a-z]/.test(id)) return true;
+                        // Google-style obfuscated classes (e.g. gLFyf, APjFqb) — mixed-case letters that don't follow camelCase/PascalCase (with common acronyms allowed)
+                        if (/^[a-zA-Z]{4,8}$/.test(id) && /[A-Z]/.test(id) && /[a-z]/.test(id)) {
+                            const acr = '(?:UI|UX|ID|DB|IO|IP|OS|QA|AI|ML|API|URL|CSS|DOM|RGB|SVG|XML|SQL|SDK|CLI|SSH|DNS|TCP|UDP|HTTP|JSON|HTML)';
+                            const validCamelCase = new RegExp('^(?:' + acr + '|[A-Z]?[a-z]+)(?:' + acr + '|[A-Z][a-z]+)*$');
+                            if (!validCamelCase.test(id)) return true;
+                        }
+                        // Short mixed-case alphanumeric with digits (e.g. A7sPV, tX61Ub, gL3fY)
+                        if (id.length <= 10 && /^[a-zA-Z0-9]+$/.test(id) && /[A-Z]/.test(id) && /[a-z]/.test(id) && /[0-9]/.test(id)) return true;
                         // Styled-components or CSS modules with hashes like css-1n7jcv, style_module__1xyz
                         if (/^css-[a-zA-Z0-9]+/.test(id) || /^sc-[a-zA-Z0-9]+/.test(id) || /_[a-zA-Z0-9]{5,}$/.test(id) || /-[a-zA-Z0-9]{5,}$/.test(id)) return true;
                         // Tailwind arbitrary values or very complex utility classes
@@ -396,6 +381,9 @@ async function runHeadful(data, options = {}) {
 
                 window._figraniumInspectClickHandler = async (e) => {
                     if (!window._figraniumInspectHandler) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    e.stopImmediatePropagation();
 
                     const element = e.composedPath ? e.composedPath()[0] : e.target;
                     const selectors = window._figraniumGetSelectors(element);
@@ -455,7 +443,14 @@ async function runHeadful(data, options = {}) {
         });
 
         if (!page) {
-            page = await context.newPage();
+            // Persistent context auto-creates a blank page; reuse it or open a new one
+            const existingPages = context.pages();
+            page = existingPages.length > 0 ? existingPages[0] : await context.newPage();
+            try {
+                const cdp = await context.newCDPSession(page);
+                const { windowId } = await cdp.send('Browser.getWindowForTarget');
+                await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'maximized' } });
+            } catch (e) { }
         } else {
             try { await page.evaluate(inspectInitFn); } catch (e) { }
             try {
@@ -480,38 +475,39 @@ async function runHeadful(data, options = {}) {
             await page.goto(url).catch(() => { });
         }
 
-        const saveState = async () => {
-            if (statelessExecution) return;
-            try {
-                await context.storageState({ path: STORAGE_STATE_FILE });
-            } catch (e) { }
-        };
+        const syncInterval = statelessExecution ? null : setInterval(() => {
+            if (activeSession && activeSession.context) {
+                saveHeadfulStorageState(activeSession.context).catch(() => {});
+            }
+        }, 30000);
+        activeSession = { browser, context, page, status: 'running', startedAt: activeSession.startedAt, inspectModeEnabled: activeSession.inspectModeEnabled, statelessExecution, interval: syncInterval };
 
-        const interval = setInterval(saveState, 10000);
-        activeSession = { browser, context, page, interval, status: 'running', startedAt: activeSession.startedAt, stateless: statelessExecution, inspectModeEnabled: activeSession.inspectModeEnabled };
-
-        page.on('close', async () => {
-            clearInterval(interval);
-            await saveState();
-        });
+        page.on('close', async () => { });
 
         const responseData = {
             message: 'Headful session started.',
-            userAgentUsed: selectedUA,
-            path: statelessExecution ? null : STORAGE_STATE_FILE
+            userAgentUsed: selectedUA
         };
 
         if (res) {
             res.json(responseData);
         }
 
-        await new Promise((resolve) => browser.on('disconnected', resolve));
-        clearInterval(interval);
-        await saveState();
+        if (browser) {
+            await new Promise((resolve) => browser.once('disconnected', resolve));
+        } else {
+            // Persistent context: context.browser() returns null; wait for context close instead
+            await new Promise((resolve) => context.once('close', resolve));
+        }
+        if (syncInterval) clearInterval(syncInterval);
+        if (!statelessExecution && context) {
+            await saveHeadfulStorageState(context).catch(() => {});
+        }
         activeSession = null;
         return responseData;
     } catch (error) {
         if (browser) await browser.close();
+        else if (context) await context.close().catch(() => {});
         activeSession = null;
         throw error;
     }

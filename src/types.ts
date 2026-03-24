@@ -1,4 +1,22 @@
 export type TaskMode = 'scrape' | 'agent' | 'headful';
+
+export interface Credential {
+    id: string;
+    name: string;
+    provider: 'baserow';
+    config: {
+        baseUrl: string;
+        token: string;
+    };
+}
+
+export interface TaskOutput {
+    provider: 'baserow';
+    credentialId: string;
+    databaseId?: string;
+    tableId: string;
+    onError: 'fail' | 'ignore';
+}
 export type ViewMode = 'visual' | 'json' | 'api' | 'history';
 export type VarType = 'string' | 'number' | 'boolean';
 
@@ -56,6 +74,21 @@ export interface Action {
     typeMode?: 'append' | 'replace';
 }
 
+export interface TaskSchedule {
+    enabled: boolean;
+    frequency?: 'interval' | 'hourly' | 'daily' | 'weekly' | 'monthly';
+    intervalMinutes?: number;
+    hour?: number;
+    minute?: number;
+    daysOfWeek?: number[];
+    dayOfMonth?: number;
+    cron?: string;
+    lastRun?: number;
+    lastRunStatus?: 'success' | 'error';
+    lastRunDurationMs?: number;
+    nextRun?: number;
+}
+
 export interface Task {
     id?: string;
     name: string;
@@ -73,10 +106,13 @@ export interface Task {
     last_opened?: number;
     extractionScript?: string;
     extractionFormat?: 'json' | 'csv';
+    includeHtml?: boolean;
+    output?: TaskOutput;
     includeShadowDom?: boolean;
     disableRecording?: boolean;
     statelessExecution?: boolean;
     versions?: TaskVersion[];
+    schedule?: TaskSchedule;
 }
 
 export interface TaskVersion {

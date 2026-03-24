@@ -94,6 +94,13 @@ const requireAuthForSettings = (req, res, next) => {
     return requireAuth(req, res, next);
 };
 
+const requireAuthOrApiKey = async (req, res, next) => {
+    if (req.session.user) {
+        return next();
+    }
+    return requireApiKey(req, res, next);
+};
+
 const isLoopback = (ip) => {
     const normalized = normalizeIp(ip);
     return normalized === '127.0.0.1' || normalized === '::1';
@@ -101,7 +108,7 @@ const isLoopback = (ip) => {
 
 const requireApiKey = async (req, res, next) => {
     const internalRun = req.get('x-internal-run');
-    if (internalRun === '1' && isLoopback(req.ip)) {
+    if (internalRun === '1' && isLoopback(req.socket?.remoteAddress)) {
         return next();
     }
     const headerKey = req.get('x-api-key') || req.get('key');
@@ -150,5 +157,6 @@ module.exports = {
     requireAuth,
     requireAuthForSettings,
     requireApiKey,
+    requireAuthOrApiKey,
     isIpAllowed
 };

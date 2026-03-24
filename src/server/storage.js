@@ -4,6 +4,7 @@ const {
     USERS_FILE,
     TASKS_FILE,
     EXECUTIONS_FILE,
+    CREDENTIALS_FILE,
     API_KEY_FILE,
     GEMINI_API_KEY_FILE,
     OPENAI_API_KEY_FILE,
@@ -43,6 +44,25 @@ async function ensureDB() {
     return dbInitPromise;
 }
 
+async function bulkInsert(client, table, columns, rows) {
+    if (!rows || rows.length === 0) return;
+    const valuePlaceholders = [];
+    const flatValues = [];
+    let placeholderIndex = 1;
+
+    for (const row of rows) {
+        const placeholders = [];
+        for (const col of columns) {
+            placeholders.push(`$${placeholderIndex++}`);
+            flatValues.push(row[col]);
+        }
+        valuePlaceholders.push(`(${placeholders.join(', ')})`);
+    }
+
+    const query = `INSERT INTO ${table} (${columns.join(', ')}) VALUES ${valuePlaceholders.join(', ')}`;
+    await client.query(query, flatValues);
+}
+
 // User Storage
 // Load users is now asynchronous since DB query is async
 async function loadUsers() {
@@ -50,11 +70,10 @@ async function loadUsers() {
     const now = Date.now();
     if (useDB) {
         if (usersCache && (now - usersLastCheck < STORAGE_CACHE_TTL)) {
-            return [...usersCache];
+            return usersCache;
         }
         if (usersLoadPromise) {
-            const result = await usersLoadPromise;
-            return [...result];
+            return await usersLoadPromise;
         }
         usersLoadPromise = (async () => {
             try {
@@ -68,12 +87,11 @@ async function loadUsers() {
             usersLoadPromise = null;
             return usersCache;
         })();
-        const result = await usersLoadPromise;
-        return [...result];
+        return await usersLoadPromise;
     }
 
     if (usersCache && (now - usersLastCheck < STORAGE_CACHE_TTL)) {
-        return [...usersCache];
+        return usersCache;
     }
 
     let stat;
@@ -87,12 +105,11 @@ async function loadUsers() {
 
     if (usersCache && usersMtime === stat.mtimeMs) {
         usersLastCheck = now;
-        return [...usersCache];
+        return usersCache;
     }
 
     if (usersLoadPromise) {
-        const result = await usersLoadPromise;
-        return [...result];
+        return await usersLoadPromise;
     }
 
     usersLoadPromise = (async () => {
@@ -109,8 +126,7 @@ async function loadUsers() {
         return usersCache;
     })();
 
-    const result = await usersLoadPromise;
-    return [...result];
+    return await usersLoadPromise;
 }
 
 async function saveUsers(users) {
@@ -123,9 +139,8 @@ async function saveUsers(users) {
         try {
             await client.query('BEGIN');
             await client.query('TRUNCATE users');
-            for (let i = 0; i < users.length; i++) {
-                await client.query('INSERT INTO users (id, data) VALUES ($1, $2)', [i + 1, users[i]]);
-            }
+            const rows = users.map((data, i) => ({ id: i + 1, data }));
+            await bulkInsert(client, 'users', ['id', 'data'], rows);
             await client.query('COMMIT');
         } catch (e) {
             await client.query('ROLLBACK');
@@ -177,11 +192,10 @@ async function loadTasks() {
     const now = Date.now();
     if (useDB) {
         // Simple cache without mtime check if we rely on in-memory operations to mutate it
-        if (tasksCache && (now - tasksLastCheck < STORAGE_CACHE_TTL)) return [...tasksCache];
+        if (tasksCache && (now - tasksLastCheck < STORAGE_CACHE_TTL)) return tasksCache;
 
         if (tasksLoadPromise) {
-            const result = await tasksLoadPromise;
-            return [...result];
+            return await tasksLoadPromise;
         }
 
         tasksLoadPromise = (async () => {
@@ -199,12 +213,11 @@ async function loadTasks() {
             return tasksCache;
         })();
 
-        const result = await tasksLoadPromise;
-        return [...result];
+        return await tasksLoadPromise;
     }
 
     if (tasksCache && (now - tasksLastCheck < STORAGE_CACHE_TTL)) {
-        return [...tasksCache];
+        return tasksCache;
     }
 
     let stat;
@@ -218,12 +231,11 @@ async function loadTasks() {
 
     if (tasksCache && tasksMtime === stat.mtimeMs) {
         tasksLastCheck = now;
-        return [...tasksCache];
+        return tasksCache;
     }
 
     if (tasksLoadPromise) {
-        const result = await tasksLoadPromise;
-        return [...result];
+        return await tasksLoadPromise;
     }
 
     tasksLoadPromise = (async () => {
@@ -242,8 +254,7 @@ async function loadTasks() {
         return tasksCache;
     })();
 
-    const result = await tasksLoadPromise;
-    return [...result];
+    return await tasksLoadPromise;
 }
 
 async function saveTasks(tasks) {
@@ -257,9 +268,8 @@ async function saveTasks(tasks) {
         try {
             await client.query('BEGIN');
             await client.query('TRUNCATE tasks');
-            for (const task of tasks) {
-                await client.query('INSERT INTO tasks (id, data) VALUES ($1, $2)', [task.id, task]);
-            }
+            const rows = tasks.map(task => ({ id: task.id, data: task }));
+            await bulkInsert(client, 'tasks', ['id', 'data'], rows);
             await client.query('COMMIT');
         } catch (e) {
             await client.query('ROLLBACK');
@@ -281,9 +291,23 @@ async function saveTasks(tasks) {
 
 // Execution Storage
 let executionsCache = null;
+let executionsMap = new Map();
 let executionsLoadPromise = null;
 let executionsSaveTimer = null;
 let executionsWritePromise = Promise.resolve();
+
+function syncExecutionsMap() {
+    if (!executionsCache) {
+        executionsMap.clear();
+        return;
+    }
+    executionsMap = new Map(executionsCache.map(exec => [exec.id, exec]));
+}
+
+function getExecutionById(id) {
+    if (!executionsCache) return null;
+    return executionsMap.get(id) || null;
+}
 
 async function performExecutionsWrite(data) {
     const nextWrite = executionsWritePromise.then(() => fs.promises.writeFile(EXECUTIONS_FILE, data));
@@ -292,11 +316,10 @@ async function performExecutionsWrite(data) {
 }
 
 async function loadExecutions() {
-    if (executionsCache) return [...executionsCache];
+    if (executionsCache) return executionsCache;
 
     if (executionsLoadPromise) {
-        const result = await executionsLoadPromise;
-        return [...result];
+        return await executionsLoadPromise;
     }
 
     executionsLoadPromise = (async () => {
@@ -318,12 +341,12 @@ async function loadExecutions() {
                 executionsCache = [];
             }
         }
+        syncExecutionsMap();
         executionsLoadPromise = null;
         return executionsCache;
     })();
 
-    const result = await executionsLoadPromise;
-    return [...result];
+    return await executionsLoadPromise;
 }
 
 async function saveExecutions(executions) {
@@ -332,6 +355,7 @@ async function saveExecutions(executions) {
         executionsSaveTimer = null;
     }
     executionsCache = executions;
+    syncExecutionsMap();
 
     const useDB = await ensureDB();
     if (useDB) {
@@ -340,9 +364,8 @@ async function saveExecutions(executions) {
         try {
             await client.query('BEGIN');
             await client.query('TRUNCATE executions');
-            for (const exec of executions) {
-                await client.query('INSERT INTO executions (id, data) VALUES ($1, $2)', [exec.id, exec]);
-            }
+            const rows = executions.map(exec => ({ id: exec.id, data: exec }));
+            await bulkInsert(client, 'executions', ['id', 'data'], rows);
             await client.query('COMMIT');
         } catch (e) {
             await client.query('ROLLBACK');
@@ -361,8 +384,12 @@ async function appendExecution(entry) {
     if (!executionsCache) await loadExecutions();
 
     executionsCache.unshift(entry);
+    // ⚡ Bolt: Incremental Map update instead of rebuilding the entire map (O(1) vs O(N))
+    executionsMap.set(entry.id, entry);
+
     if (executionsCache.length > MAX_EXECUTIONS) {
-        executionsCache.length = MAX_EXECUTIONS;
+        const removed = executionsCache.pop();
+        if (removed) executionsMap.delete(removed.id);
     }
 
     const useDB = await ensureDB();
@@ -502,10 +529,9 @@ async function loadGeminiApiKey() {
     const now = Date.now();
 
     if (useDB) {
-        if (geminiKeysCache && (now - geminiKeysLastCheck < STORAGE_CACHE_TTL)) return [...geminiKeysCache];
+        if (geminiKeysCache && (now - geminiKeysLastCheck < STORAGE_CACHE_TTL)) return geminiKeysCache;
         if (geminiKeysLoadPromise) {
-            const result = await geminiKeysLoadPromise;
-            return [...result];
+            return await geminiKeysLoadPromise;
         }
 
         geminiKeysLoadPromise = (async () => {
@@ -522,11 +548,10 @@ async function loadGeminiApiKey() {
             return geminiKeysCache;
         })();
 
-        const result = await geminiKeysLoadPromise;
-        return [...result];
+        return await geminiKeysLoadPromise;
     }
 
-    if (geminiKeysCache && (now - geminiKeysLastCheck < STORAGE_CACHE_TTL)) return [...geminiKeysCache];
+    if (geminiKeysCache && (now - geminiKeysLastCheck < STORAGE_CACHE_TTL)) return geminiKeysCache;
 
     let stat;
     try {
@@ -539,12 +564,11 @@ async function loadGeminiApiKey() {
 
     if (geminiKeysCache && geminiKeysMtime === stat.mtimeMs) {
         geminiKeysLastCheck = now;
-        return [...geminiKeysCache];
+        return geminiKeysCache;
     }
 
     if (geminiKeysLoadPromise) {
-        const result = await geminiKeysLoadPromise;
-        return [...result];
+        return await geminiKeysLoadPromise;
     }
 
     geminiKeysLoadPromise = (async () => {
@@ -567,8 +591,7 @@ async function loadGeminiApiKey() {
         return geminiKeysCache;
     })();
 
-    const result = await geminiKeysLoadPromise;
-    return [...result];
+    return await geminiKeysLoadPromise;
 }
 
 async function saveGeminiApiKey(keysArg) {
@@ -586,10 +609,8 @@ async function saveGeminiApiKey(keysArg) {
         try {
             await client.query('BEGIN');
             await client.query('TRUNCATE gemini_api_key');
-            let id = 1;
-            for (const key of keys) {
-                await client.query('INSERT INTO gemini_api_key (id, key) VALUES ($1, $2)', [id++, key]);
-            }
+            const rows = keys.map((key, i) => ({ id: i + 1, key }));
+            await bulkInsert(client, 'gemini_api_key', ['id', 'key'], rows);
             await client.query('COMMIT');
         } catch (e) {
             await client.query('ROLLBACK');
@@ -620,10 +641,9 @@ async function loadOpenAiApiKey() {
     const now = Date.now();
 
     if (useDB) {
-        if (openAiKeysCache && (now - openAiKeysLastCheck < STORAGE_CACHE_TTL)) return [...openAiKeysCache];
+        if (openAiKeysCache && (now - openAiKeysLastCheck < STORAGE_CACHE_TTL)) return openAiKeysCache;
         if (openAiKeysLoadPromise) {
-            const result = await openAiKeysLoadPromise;
-            return [...result];
+            return await openAiKeysLoadPromise;
         }
 
         openAiKeysLoadPromise = (async () => {
@@ -640,11 +660,10 @@ async function loadOpenAiApiKey() {
             return openAiKeysCache;
         })();
 
-        const result = await openAiKeysLoadPromise;
-        return [...result];
+        return await openAiKeysLoadPromise;
     }
 
-    if (openAiKeysCache && (now - openAiKeysLastCheck < STORAGE_CACHE_TTL)) return [...openAiKeysCache];
+    if (openAiKeysCache && (now - openAiKeysLastCheck < STORAGE_CACHE_TTL)) return openAiKeysCache;
 
     let stat;
     try {
@@ -657,12 +676,11 @@ async function loadOpenAiApiKey() {
 
     if (openAiKeysCache && openAiKeysMtime === stat.mtimeMs) {
         openAiKeysLastCheck = now;
-        return [...openAiKeysCache];
+        return openAiKeysCache;
     }
 
     if (openAiKeysLoadPromise) {
-        const result = await openAiKeysLoadPromise;
-        return [...result];
+        return await openAiKeysLoadPromise;
     }
 
     openAiKeysLoadPromise = (async () => {
@@ -685,8 +703,7 @@ async function loadOpenAiApiKey() {
         return openAiKeysCache;
     })();
 
-    const result = await openAiKeysLoadPromise;
-    return [...result];
+    return await openAiKeysLoadPromise;
 }
 
 async function saveOpenAiApiKey(keysArg) {
@@ -704,10 +721,8 @@ async function saveOpenAiApiKey(keysArg) {
         try {
             await client.query('BEGIN');
             await client.query('TRUNCATE openai_api_key');
-            let id = 1;
-            for (const key of keys) {
-                await client.query('INSERT INTO openai_api_key (id, key) VALUES ($1, $2)', [id++, key]);
-            }
+            const rows = keys.map((key, i) => ({ id: i + 1, key }));
+            await bulkInsert(client, 'openai_api_key', ['id', 'key'], rows);
             await client.query('COMMIT');
         } catch (e) {
             await client.query('ROLLBACK');
@@ -738,10 +753,9 @@ async function loadClaudeApiKey() {
     const now = Date.now();
 
     if (useDB) {
-        if (claudeKeysCache && (now - claudeKeysLastCheck < STORAGE_CACHE_TTL)) return [...claudeKeysCache];
+        if (claudeKeysCache && (now - claudeKeysLastCheck < STORAGE_CACHE_TTL)) return claudeKeysCache;
         if (claudeKeysLoadPromise) {
-            const result = await claudeKeysLoadPromise;
-            return [...result];
+            return await claudeKeysLoadPromise;
         }
 
         claudeKeysLoadPromise = (async () => {
@@ -758,11 +772,10 @@ async function loadClaudeApiKey() {
             return claudeKeysCache;
         })();
 
-        const result = await claudeKeysLoadPromise;
-        return [...result];
+        return await claudeKeysLoadPromise;
     }
 
-    if (claudeKeysCache && (now - claudeKeysLastCheck < STORAGE_CACHE_TTL)) return [...claudeKeysCache];
+    if (claudeKeysCache && (now - claudeKeysLastCheck < STORAGE_CACHE_TTL)) return claudeKeysCache;
 
     let stat;
     try {
@@ -775,12 +788,11 @@ async function loadClaudeApiKey() {
 
     if (claudeKeysCache && claudeKeysMtime === stat.mtimeMs) {
         claudeKeysLastCheck = now;
-        return [...claudeKeysCache];
+        return claudeKeysCache;
     }
 
     if (claudeKeysLoadPromise) {
-        const result = await claudeKeysLoadPromise;
-        return [...result];
+        return await claudeKeysLoadPromise;
     }
 
     claudeKeysLoadPromise = (async () => {
@@ -803,8 +815,7 @@ async function loadClaudeApiKey() {
         return claudeKeysCache;
     })();
 
-    const result = await claudeKeysLoadPromise;
-    return [...result];
+    return await claudeKeysLoadPromise;
 }
 
 async function saveClaudeApiKey(keysArg) {
@@ -822,10 +833,8 @@ async function saveClaudeApiKey(keysArg) {
         try {
             await client.query('BEGIN');
             await client.query('TRUNCATE claude_api_key');
-            let id = 1;
-            for (const key of keys) {
-                await client.query('INSERT INTO claude_api_key (id, key) VALUES ($1, $2)', [id++, key]);
-            }
+            const rows = keys.map((key, i) => ({ id: i + 1, key }));
+            await bulkInsert(client, 'claude_api_key', ['id', 'key'], rows);
             await client.query('COMMIT');
         } catch (e) {
             await client.query('ROLLBACK');
@@ -843,6 +852,25 @@ async function saveClaudeApiKey(keysArg) {
     } catch (e) {
         console.error('[STORAGE] Failed to save Claude keys to file:', e.message);
     }
+}
+
+// Credentials Storage
+let credentialsCache = null;
+
+async function loadCredentials() {
+    if (credentialsCache) return credentialsCache;
+    try {
+        const raw = await fs.promises.readFile(CREDENTIALS_FILE, 'utf8');
+        credentialsCache = JSON.parse(raw);
+    } catch {
+        credentialsCache = [];
+    }
+    return credentialsCache;
+}
+
+async function saveCredentials(credentials) {
+    credentialsCache = credentials;
+    await fs.promises.writeFile(CREDENTIALS_FILE, JSON.stringify(credentials, null, 2));
 }
 
 // Session Helper
@@ -925,6 +953,28 @@ const getStorageStateFile = () => {
     return STORAGE_STATE_PATH;
 };
 
+/**
+ * Flush any pending debounced execution writes to disk immediately.
+ * Called during graceful shutdown to prevent data loss.
+ */
+async function flushExecutions() {
+    if (executionsSaveTimer) {
+        clearTimeout(executionsSaveTimer);
+        executionsSaveTimer = null;
+    }
+    if (!executionsCache) return;
+
+    const useDB = await ensureDB();
+    if (useDB) return; // DB writes are immediate, nothing to flush
+
+    try {
+        const data = JSON.stringify(executionsCache, null, 2);
+        await performExecutionsWrite(data);
+    } catch (err) {
+        console.error('[STORAGE] Failed to flush executions on shutdown:', err);
+    }
+}
+
 module.exports = {
     loadUsers,
     saveUsers,
@@ -934,7 +984,9 @@ module.exports = {
     getTaskIndexById,
     loadExecutions,
     saveExecutions,
+    getExecutionById,
     appendExecution,
+    flushExecutions,
     loadApiKey,
     saveApiKey,
     loadGeminiApiKey,
@@ -943,6 +995,8 @@ module.exports = {
     saveOpenAiApiKey,
     loadClaudeApiKey,
     saveClaudeApiKey,
+    loadCredentials,
+    saveCredentials,
     saveSession,
     loadAllowedIps,
     getStorageStateFile

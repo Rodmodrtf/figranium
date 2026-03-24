@@ -14,13 +14,14 @@ const OPENAI_API_KEY_FILE = path.join(DATA_DIR, 'openai_api_key.json');
 const CLAUDE_API_KEY_FILE = path.join(DATA_DIR, 'claude_api_key.json');
 const STORAGE_STATE_PATH = path.join(__dirname, '../../storage_state.json');
 const EXECUTIONS_FILE = path.join(DATA_DIR, 'executions.json');
+const CREDENTIALS_FILE = path.join(DATA_DIR, 'credentials.json');
 const MAX_TASK_VERSIONS = 30;
 const MAX_EXECUTIONS = 500;
 const REQUEST_LIMIT_WINDOW_MS = 15 * 60 * 1000;
 const AUTH_RATE_LIMIT_MAX = Number(process.env.AUTH_RATE_LIMIT_MAX || 10);
 const DATA_RATE_LIMIT_MAX = Number(process.env.DATA_RATE_LIMIT_MAX || 100);
 const ALLOWED_IPS_TTL_MS = 5000;
-const SESSION_TTL_SECONDS = 10 * 365 * 24 * 60 * 60; // 10 years
+const SESSION_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 const NOVNC_PORT = Number(process.env.NOVNC_PORT) || 54311;
 const WEBSOCKIFY_PATH = '/websockify';
 
@@ -41,6 +42,7 @@ module.exports = {
     CLAUDE_API_KEY_FILE,
     STORAGE_STATE_PATH,
     EXECUTIONS_FILE,
+    CREDENTIALS_FILE,
     MAX_TASK_VERSIONS,
     MAX_EXECUTIONS,
     REQUEST_LIMIT_WINDOW_MS,

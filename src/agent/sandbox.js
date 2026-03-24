@@ -29,17 +29,14 @@ function createSafeProxy(target) {
 
             if (typeof value === 'function') {
                 return function (...args) {
-                    const realArgs = args.map(arg => {
-                        return (arg && arg[REAL_TARGET]) ? arg[REAL_TARGET] : arg;
-                    });
-                    const wrappedArgs = realArgs.map(arg => {
-                        if (typeof arg === 'function') {
+                    const wrappedArgs = args.map(arg => {
+                        const raw = (arg && arg[REAL_TARGET]) ? arg[REAL_TARGET] : arg;
+                        if (typeof raw === 'function') {
                             return function (...cbArgs) {
-                                const wrappedCbArgs = cbArgs.map(a => createSafeProxy(a));
-                                return arg.apply(this, wrappedCbArgs);
-                            }
+                                return raw.apply(createSafeProxy(this), cbArgs.map(a => createSafeProxy(a)));
+                            };
                         }
-                        return arg;
+                        return raw;
                     });
                     try {
                         const result = value.apply(realTarget, wrappedArgs);
@@ -54,17 +51,14 @@ function createSafeProxy(target) {
         apply(target, thisArg, argList) {
              const realTarget = target[REAL_TARGET] || target;
              const realThis = (thisArg && thisArg[REAL_TARGET]) ? thisArg[REAL_TARGET] : thisArg;
-             const realArgs = argList.map(arg => {
-                return (arg && arg[REAL_TARGET]) ? arg[REAL_TARGET] : arg;
-             });
-             const wrappedArgs = realArgs.map(arg => {
-                 if (typeof arg === 'function') {
+             const wrappedArgs = argList.map(arg => {
+                 const raw = (arg && arg[REAL_TARGET]) ? arg[REAL_TARGET] : arg;
+                 if (typeof raw === 'function') {
                       return function (...cbArgs) {
-                           const wrappedCbArgs = cbArgs.map(a => createSafeProxy(a));
-                           return arg.apply(this, wrappedCbArgs);
-                      }
+                           return raw.apply(createSafeProxy(this), cbArgs.map(a => createSafeProxy(a)));
+                      };
                  }
-                 return arg;
+                 return raw;
              });
 
              try {
@@ -76,11 +70,17 @@ function createSafeProxy(target) {
         },
         construct(target, argumentsList, newTarget) {
             const realTarget = target[REAL_TARGET] || target;
-            const realArgs = argumentsList.map(arg => {
-                return (arg && arg[REAL_TARGET]) ? arg[REAL_TARGET] : arg;
+            const wrappedArgs = argumentsList.map(arg => {
+                const raw = (arg && arg[REAL_TARGET]) ? arg[REAL_TARGET] : arg;
+                if (typeof raw === 'function') {
+                    return function (...cbArgs) {
+                        return raw.apply(createSafeProxy(this), cbArgs.map(a => createSafeProxy(a)));
+                    };
+                }
+                return raw;
             });
             try {
-                const result = Reflect.construct(realTarget, realArgs, realTarget);
+                const result = Reflect.construct(realTarget, wrappedArgs, realTarget);
                 return createSafeProxy(result);
             } catch (e) {
                 throw e;
@@ -182,7 +182,7 @@ const runExtractionScript = async (script, html, pageUrl, includeShadowDom) => {
             })();
         `;
 
-        const result = await vm.runInContext(scriptCode, context);
+        const result = await vm.runInContext(scriptCode, context, { timeout: 5000 });
         return { result, logs: logBuffer };
     } catch (e) {
         return { result: `Extraction script error: ${e.message}`, logs: [] };

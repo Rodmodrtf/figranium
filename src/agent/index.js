@@ -3,11 +3,10 @@ const path = require('path');
 const { selectUserAgent } = require('../../user-agent-settings');
 const { safeFormatHTML } = require('../../html-utils');
 const { validateUrl } = require('../../url-utils');
-const { parseBooleanFlag, toCsvString, cookieMatches } = require('../../common-utils');
+const { parseBooleanFlag, sanitizeRunId, toCsvString } = require('../../common-utils');
 const { runExtractionScript } = require('./sandbox');
 const { cleanHtml } = require('./dom-utils');
 const { launchBrowser, createBrowserContext } = require('./browser');
-const { getStorageStateFile } = require('../server/storage');
 
 // New Modules
 const { buildBlockMap, randomBetween, getForeachItems } = require('./helpers');
@@ -56,7 +55,7 @@ async function runAgent(data, options = {}) {
     };
 
     const resolveTemplate = (input) => {
-        if (typeof input !== 'string') return input;
+        if (typeof input !== 'string' || !input.includes('{$')) return input;
         return input.replace(/\{\$([\w.]+)\}/g, (_match, name) => {
             if (name === 'now') return new Date().toISOString();
             const value = runtimeVars[name];
@@ -77,7 +76,7 @@ async function runAgent(data, options = {}) {
     }
 
     const runId = data.runId ? String(data.runId) : null;
-    const captureRunId = runId || `run_${Date.now()}_unknown`;
+    const captureRunId = sanitizeRunId(runId) || `run_${Date.now()}_unknown`;
     const includeShadowDomRaw = data.includeShadowDom;
     const includeShadowDom = includeShadowDomRaw === undefined
         ? true
@@ -124,68 +123,28 @@ async function runAgent(data, options = {}) {
     try {
         const useRotateProxies = String(rotateProxies).toLowerCase() === 'true' || rotateProxies === true;
         const headless = options.headless !== undefined ? options.headless : true;
-        browser = await launchBrowser({ rotateProxies: useRotateProxies, headless });
+        const launchOptions = await launchBrowser({ rotateProxies: useRotateProxies, headless });
 
         const recordingsDir = path.join(__dirname, '../../data/recordings');
         await fs.promises.mkdir(recordingsDir, { recursive: true });
 
         const selectedUA = await selectUserAgent(rotateUserAgents);
         const rotateViewport = String(data.rotateViewport).toLowerCase() === 'true' || data.rotateViewport === true;
-        const storageStateFile = getStorageStateFile();
 
-        context = await createBrowserContext(browser, {
+        context = await createBrowserContext(launchOptions, {
             userAgent: selectedUA,
             rotateViewport,
             statelessExecution,
-            storageStateFile,
             disableRecording,
             recordingsDir,
             includeShadowDom
         });
+        browser = context.browser();
 
         const logs = [];
         const downloads = [];
         const pendingDownloads = new Set();
         const newDownloadListeners = new Set();
-
-        let preloadedCookies = [];
-        if (fs.existsSync(storageStateFile)) {
-            try {
-                const state = JSON.parse(fs.readFileSync(storageStateFile, 'utf8'));
-                preloadedCookies = state.cookies || [];
-            } catch (e) { }
-        }
-
-        await context.route('**/*', async (route) => {
-            const request = route.request();
-            const requestUrl = request.url();
-            const resourceType = request.resourceType();
-
-            const isDataRequest = ['document', 'script', 'xhr', 'fetch'].includes(resourceType);
-            if (isDataRequest && preloadedCookies.length > 0) {
-                const filteredCookies = preloadedCookies.filter(cookie => cookieMatches(cookie, requestUrl));
-                if (filteredCookies.length > 0) {
-                    const fileCookieMap = new Map();
-                    filteredCookies.forEach(c => fileCookieMap.set(c.name, c.value));
-
-                    const existingCookieHeader = request.headers()['cookie'] || '';
-                    const existingCookies = existingCookieHeader.split(';').filter(Boolean).map(s => s.trim());
-
-                    existingCookies.forEach(s => {
-                        const [name, ...valParts] = s.split('=');
-                        const val = valParts.join('=');
-                        if (!fileCookieMap.has(name)) {
-                            fileCookieMap.set(name, val);
-                        }
-                    });
-
-                    const cookieHeader = Array.from(fileCookieMap.entries()).map(([n, v]) => `${n}=${v}`).join('; ');
-                    const headers = { ...request.headers(), 'cookie': cookieHeader };
-                    return route.continue({ headers });
-                }
-            }
-            route.continue();
-        });
 
         context.on('page', (p) => {
             p.on('download', async (download) => {
@@ -222,7 +181,9 @@ async function runAgent(data, options = {}) {
             });
         });
 
-        page = await context.newPage();
+        // Persistent context auto-creates a blank page; reuse it or open a new one
+        const existingPages = context.pages();
+        page = existingPages.length > 0 ? existingPages[0] : await context.newPage();
 
         if (url) {
             await page.goto(resolveTemplate(url), { waitUntil: 'domcontentloaded', timeout: 60000 });
@@ -274,10 +235,55 @@ async function runAgent(data, options = {}) {
             return `/captures/${screenshotName}`;
         };
 
+        // ⚡ Bolt: Pre-calculate which actions need {$html} to avoid repeated JSON.stringify in loop
+        const actionNeedsHtml = actions.map(act => JSON.stringify(act).includes('{$html}'));
+
+        // ⚡ Bolt: Pre-calculate foreach blocks that reference 'loop.html' to optimize innerHTML fetching
+        const foreachNeedsHtml = actions.map((act, i) => {
+            if (act.type !== 'foreach') return false;
+            const endIndex = startToEnd[i];
+            if (endIndex === undefined) return true; // Safety fallback
+            const subActions = actions.slice(i + 1, endIndex);
+            return subActions.some(sub => JSON.stringify(sub).includes('loop.html'));
+        });
+
+        // ⚡ Bolt: Hoist static action options out of the execution loop to avoid redundant object spreading (O(N))
+        const actionOptions = {
+            ...data,
+            api_key: data.apiKey || data.key,
+            deadClicks,
+            humanTyping,
+            allowTypos,
+            naturalTyping,
+            fatigue,
+            idleMovements,
+            overscroll,
+            cursorGlide,
+            randomizeClicks
+        };
+
         let index = 0;
         const maxSteps = Math.max(actions.length * 20, 1000);
         let steps = 0;
         let lastMouse = null;
+
+        const sharedActionContext = {
+            page,
+            logs,
+            runtimeVars,
+            resolveTemplate,
+            captureScreenshot,
+            baseDelay,
+            options: actionOptions,
+            baseUrl,
+            setStopOutcome: (out) => { stopOutcome = out; },
+            setStopRequested: (req) => { stopRequested = req; },
+            pendingDownloads,
+            waitForNewDownload: () => new Promise(res => {
+                newDownloadListeners.add(res);
+                setTimeout(() => newDownloadListeners.delete(res), 15000);
+            })
+        };
 
         while (index < actions.length) {
             if (isStopRequested(runId)) {
@@ -302,7 +308,7 @@ async function runAgent(data, options = {}) {
 
             actionIdx += 1;
 
-            if (JSON.stringify(act).includes('{$html}')) {
+            if (actionNeedsHtml[index]) {
                 try {
                     runtimeVars.html = await page.content();
                 } catch (err) {
@@ -420,7 +426,7 @@ async function runAgent(data, options = {}) {
                 reportProgress(runId, { actionId: act.id, status: 'running' });
                 let state = foreachState.get(index);
                 if (!state) {
-                    const items = await getForeachItems(act, page, runtimeVars);
+                    const items = await getForeachItems(act, page, runtimeVars, foreachNeedsHtml[index]);
                     state = { items, index: 0 };
                     foreachState.set(index, state);
                 }
@@ -486,37 +492,12 @@ async function runAgent(data, options = {}) {
 
             try {
                 reportProgress(runId, { actionId: act.id, status: 'running' });
+                // ⚡ Bolt: Re-use pre-calculated context and only attach loop-varying lastBlockOutput and lastMouse accessors
                 const actionContext = {
-                    page,
-                    logs,
-                    runtimeVars,
-                    resolveTemplate,
-                    captureScreenshot,
-                    baseDelay,
-                    options: {
-                        ...data,
-                        api_key: data.apiKey || data.key,
-                        deadClicks,
-                        humanTyping,
-                        allowTypos,
-                        naturalTyping,
-                        fatigue,
-                        idleMovements,
-                        overscroll,
-                        cursorGlide,
-                        randomizeClicks
-                    },
-                    baseUrl,
+                    ...sharedActionContext,
                     lastBlockOutput,
                     get lastMouse() { return lastMouse; },
-                    set lastMouse(val) { lastMouse = val; },
-                    setStopOutcome: (out) => { stopOutcome = out; },
-                    setStopRequested: (req) => { stopRequested = req; },
-                    pendingDownloads,
-                    waitForNewDownload: () => new Promise(res => {
-                        newDownloadListeners.add(res);
-                        setTimeout(() => newDownloadListeners.delete(res), 15000);
-                    })
+                    set lastMouse(val) { lastMouse = val; }
                 };
                 const result = await executeAction(act, actionContext);
 
@@ -557,7 +538,26 @@ async function runAgent(data, options = {}) {
             } catch (e) { }
         }
 
-        const cleanedHtml = await page.evaluate(cleanHtml, includeShadowDom);
+        let cleanedHtml = '';
+        for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+                await page.waitForLoadState('domcontentloaded').catch(() => {});
+                cleanedHtml = await page.evaluate(cleanHtml, includeShadowDom);
+                break;
+            } catch (evalErr) {
+                if (attempt < 2 && /context was destroyed|navigation/i.test(evalErr.message)) {
+                    await page.waitForTimeout(1000);
+                    continue;
+                }
+                // Final fallback: raw page content
+                try {
+                    cleanedHtml = await page.content();
+                } catch {
+                    cleanedHtml = '';
+                }
+                break;
+            }
+        }
 
         const extractionScriptRaw = typeof data.extractionScript === 'string'
             ? data.extractionScript
@@ -587,6 +587,7 @@ async function runAgent(data, options = {}) {
             console.error('Agent Screenshot failed:', e.message);
         }
 
+        const includeHtml = !!(data.includeHtml ?? (data.taskSnapshot && data.taskSnapshot.includeHtml));
         const extractionFormat = String(data.extractionFormat || (data.taskSnapshot && data.taskSnapshot.extractionFormat) || '').toLowerCase() === 'csv'
             ? 'csv'
             : 'json';
@@ -597,16 +598,13 @@ async function runAgent(data, options = {}) {
             final_url: page.url() || url || '',
             downloads: downloads.length > 0 ? downloads : undefined,
             logs: logs || [],
-            html: typeof cleanedHtml === 'string' ? safeFormatHTML(cleanedHtml) : '',
+            html: (extractionScript && !includeHtml) ? undefined : (typeof cleanedHtml === 'string' ? safeFormatHTML(cleanedHtml) : ''),
             data: formattedExtraction,
             screenshot_url: fs.existsSync(screenshotPath) ? `/captures/${screenshotName}` : null
         };
 
         const video = page.video();
         if (!options.handoffContext) {
-            if (!statelessExecution) {
-                try { await context.storageState({ path: storageStateFile }); } catch { }
-            }
             try { await context.close(); } catch { }
         }
 
@@ -639,20 +637,10 @@ async function runAgent(data, options = {}) {
             };
         }
 
-        if (!statelessExecution) {
-            try { await context.storageState({ path: storageStateFile }); } catch { }
-        }
-
         try { await browser.close(); } catch { }
         return outputData;
     } catch (error) {
         console.error('Agent Error:', error);
-        if (context && !statelessExecution && !options.handoffContext) {
-            try {
-                const storageStateFile = getStorageStateFile();
-                await context.storageState({ path: storageStateFile });
-            } catch { }
-        }
         try {
             if (context) await context.close();
         } catch { }

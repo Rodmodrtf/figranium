@@ -1,4 +1,4 @@
-const { chromium } = require('playwright');
+const { chromium } = require('./stealth-chromium');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -6,21 +6,26 @@ const { getProxySelection } = require('./proxy-rotation');
 const { selectUserAgent } = require('./user-agent-settings');
 const { formatHTML } = require('./html-utils');
 const { validateUrl } = require('./url-utils');
-const { parseBooleanFlag, toCsvString, cookieMatches } = require('./common-utils');
+const { parseBooleanFlag, sanitizeRunId, toCsvString } = require('./common-utils');
 const { installMouseHelper } = require('./src/agent/dom-utils');
 
-const STORAGE_STATE_PATH = path.join(__dirname, 'storage_state.json');
-const STORAGE_STATE_FILE = (() => {
+const PROFILE_DIR = path.join(__dirname, 'data', 'browser-profile-scrape');
+const HEADFUL_STATE_PATH = path.join(__dirname, 'data', 'headful-storage-state.json');
+
+async function injectHeadfulCookies(context) {
     try {
-        if (fs.existsSync(STORAGE_STATE_PATH)) {
-            const stat = fs.statSync(STORAGE_STATE_PATH);
-            if (stat.isDirectory()) {
-                return path.join(STORAGE_STATE_PATH, 'storage_state.json');
-            }
+        const raw = await fs.promises.readFile(HEADFUL_STATE_PATH, 'utf8');
+        const state = JSON.parse(raw);
+        const now = Date.now() / 1000;
+        const cookies = (state.cookies || []).filter(c => !c.expires || c.expires === -1 || c.expires > now);
+        if (cookies.length > 0) {
+            await context.addCookies(cookies);
+            console.log(`[SCRAPE] Injected ${cookies.length} cookies from headful session`);
         }
-    } catch { }
-    return STORAGE_STATE_PATH;
-})();
+    } catch (e) {
+        if (e.code !== 'ENOENT') console.error('[SCRAPE] Failed to inject headful cookies:', e.message);
+    }
+}
 
 async function runScrape(data) {
     const url = data.url;
@@ -32,7 +37,7 @@ async function runScrape(data) {
     const rotateViewportRaw = data.rotateViewport;
     const rotateViewport = String(rotateViewportRaw).toLowerCase() === 'true' || rotateViewportRaw === true;
     const runId = data.runId || null;
-    const captureRunId = runId ? String(runId) : `run_${Date.now()}_unknown`;
+    const captureRunId = sanitizeRunId(runId) || `run_${Date.now()}_unknown`;
     const rotateProxiesRaw = data.rotateProxies;
     const rotateProxies = String(rotateProxiesRaw).toLowerCase() === 'true' || rotateProxiesRaw === true;
     const includeShadowDomRaw = data.includeShadowDom;
@@ -58,32 +63,38 @@ async function runScrape(data) {
     let context;
     let page;
     try {
-        const launchOptions = {
-            headless: true,
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-blink-features=AutomationControlled',
-                '--hide-scrollbars',
-                '--mute-audio'
-            ]
-        };
         const selection = getProxySelection(rotateProxies);
-        if (selection.proxy) {
-            launchOptions.proxy = selection.proxy;
-        }
+        const hasProxy = !!selection.proxy;
 
-        browser = await chromium.launch(launchOptions);
+        const args = [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-blink-features=AutomationControlled',
+            '--hide-scrollbars',
+            '--mute-audio',
+            '--dns-prefetch-disable',
+            '--force-webrtc-ip-handling-policy=disable_non_proxied_udp'
+        ];
+        if (!hasProxy) {
+            args.push(
+                '--enable-features=DnsOverHttps',
+                '--dns-over-https-mode=secure',
+                '--dns-over-https-templates=https://cloudflare-dns.com/dns-query'
+            );
+        }
 
         const recordingsDir = path.join(__dirname, 'data', 'recordings');
         await fs.promises.mkdir(recordingsDir, { recursive: true });
+        await fs.promises.mkdir(PROFILE_DIR, { recursive: true });
 
         const viewport = rotateViewport
             ? { width: 1280 + Math.floor(Math.random() * 640), height: 720 + Math.floor(Math.random() * 360) }
             : { width: 1366, height: 768 };
 
         const contextOptions = {
+            headless: true,
+            args,
             userAgent: selectedUA,
             extraHTTPHeaders: customHeaders,
             viewport,
@@ -94,59 +105,25 @@ async function runScrape(data) {
             permissions: ['geolocation']
         };
 
-        const shouldUseStorageState = !statelessExecution && await fs.promises.access(STORAGE_STATE_FILE).then(() => true).catch(() => false);
-        if (shouldUseStorageState) {
-            contextOptions.storageState = STORAGE_STATE_FILE;
+        if (selection.proxy) {
+            contextOptions.proxy = selection.proxy;
         }
 
         if (!disableRecording) {
             contextOptions.recordVideo = { dir: recordingsDir, size: viewport };
         }
 
-        context = await browser.newContext(contextOptions);
-
-        let preloadedCookies = [];
-        if (!statelessExecution && fs.existsSync(STORAGE_STATE_FILE)) {
-            try {
-                const state = JSON.parse(fs.readFileSync(STORAGE_STATE_FILE, 'utf8'));
-                preloadedCookies = state.cookies || [];
-            } catch (e) { }
+        if (statelessExecution) {
+            const launchOpts = { headless: true, args, ...(selection.proxy ? { proxy: selection.proxy } : {}) };
+            browser = await chromium.launch(launchOpts);
+            context = await browser.newContext(contextOptions);
+        } else {
+            await fs.promises.mkdir(PROFILE_DIR, { recursive: true });
+            context = await chromium.launchPersistentContext(PROFILE_DIR, { headless: true, args, ...contextOptions });
+            browser = context.browser();
+            await injectHeadfulCookies(context);
         }
 
-        await context.route('**/*', async (route) => {
-            const request = route.request();
-            const requestUrl = request.url();
-            const resourceType = request.resourceType();
-
-            const isDataRequest = ['document', 'script', 'xhr', 'fetch'].includes(resourceType);
-            if (isDataRequest && preloadedCookies.length > 0) {
-                const filteredCookies = preloadedCookies.filter(cookie => cookieMatches(cookie, requestUrl));
-                if (filteredCookies.length > 0) {
-                    const fileCookieMap = new Map();
-                    filteredCookies.forEach(c => fileCookieMap.set(c.name, c.value));
-
-                    const existingCookieHeader = request.headers()['cookie'] || '';
-                    const existingCookies = existingCookieHeader.split(';').filter(Boolean).map(s => s.trim());
-
-                    existingCookies.forEach(s => {
-                        const [name, ...valParts] = s.split('=');
-                        const val = valParts.join('=');
-                        if (!fileCookieMap.has(name)) {
-                            fileCookieMap.set(name, val);
-                        }
-                    });
-
-                    const cookieHeader = Array.from(fileCookieMap.entries()).map(([n, v]) => `${n}=${v}`).join('; ');
-                    const headers = { ...request.headers(), 'cookie': cookieHeader };
-                    return route.continue({ headers });
-                }
-            }
-            route.continue();
-        });
-
-        await context.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        });
         await context.addInitScript(installMouseHelper);
 
         if (includeShadowDom) {
@@ -160,7 +137,9 @@ async function runScrape(data) {
             });
         }
 
-        page = await context.newPage();
+        // Persistent context auto-creates a blank page; reuse it or open a new one
+        const existingPages = context.pages();
+        page = existingPages.length > 0 ? existingPages[0] : await context.newPage();
 
         await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 60000 });
 
@@ -358,10 +337,6 @@ async function runScrape(data) {
             screenshot_url: `/captures/${screenshotName}`
         };
 
-        if (!statelessExecution) {
-            try { await context.storageState({ path: STORAGE_STATE_FILE }); } catch { }
-        }
-
         const video = page.video();
         await context.close();
         if (video) {
@@ -387,12 +362,9 @@ async function runScrape(data) {
             }
         }
 
-        await browser.close();
+        if (browser) await browser.close();
         return resultData;
     } catch (error) {
-        if (context && !statelessExecution) {
-            try { await context.storageState({ path: STORAGE_STATE_FILE }); } catch { }
-        }
         if (context) await context.close();
         if (browser) await browser.close();
         throw error;
